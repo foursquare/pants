@@ -4,7 +4,7 @@
 
 from __future__ import absolute_import, division, print_function, unicode_literals
 
-import ConfigParser
+import configparser
 import glob
 import os
 import shutil
@@ -231,7 +231,8 @@ class PantsRunIntegrationTest(unittest.TestCase):
 
     if config:
       config_data = config.copy()
-      ini = ConfigParser.ConfigParser(defaults=config_data.pop('DEFAULT', None))
+      # TODO(python3port): RawConfigParser is legacy. Investigate updating to modern API.
+      ini = configparser.RawConfigParser(defaults=config_data.pop('DEFAULT', None))
       for section, section_config in config_data.items():
         ini.add_section(section)
         for key, value in section_config.items():
@@ -444,7 +445,7 @@ class PantsRunIntegrationTest(unittest.TestCase):
   @contextmanager
   def mock_buildroot(self, dirs_to_copy=None):
     """Construct a mock buildroot and return a helper object for interacting with it."""
-    Manager = namedtuple('Manager', 'write_file pushd dir')
+    Manager = namedtuple('Manager', 'write_file pushd new_buildroot')
     # N.B. BUILD.tools, contrib, 3rdparty needs to be copied vs symlinked to avoid
     # symlink prefix check error in v1 and v2 engine.
     files_to_copy = ('BUILD.tools',)

@@ -10,10 +10,11 @@ import os
 import signal
 import threading
 import time
+from builtins import range, zip
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 from colors import bold, cyan, magenta
-from concurrent.futures import ThreadPoolExecutor
 
 from pants.pantsd.process_manager import ProcessManager
 from pants.util.collections import recursively_update
