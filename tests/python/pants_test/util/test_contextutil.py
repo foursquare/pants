@@ -16,6 +16,7 @@ from builtins import next, object, range, str
 from contextlib import contextmanager
 
 import mock
+from future.utils import PY3
 
 from pants.util.contextutil import (HardSystemExit, InvalidZipPath, Timer, environment_as,
                                     exception_logging, hard_exit_handler, hermetic_environment_as,
@@ -34,7 +35,7 @@ class ContextutilTest(unittest.TestCase):
       pass
 
   def test_override_single_variable(self):
-    with temporary_file() as output:
+    with temporary_file(binary_mode=False) as output:
       # test that the override takes place
       with environment_as(HORK='BORK'):
         subprocess.Popen([sys.executable, '-c', 'import os; print(os.environ["HORK"])'],
@@ -43,14 +44,14 @@ class ContextutilTest(unittest.TestCase):
         self.assertEquals('BORK\n', output.read())
 
       # test that the variable is cleared
-      with temporary_file() as new_output:
+      with temporary_file(binary_mode=False) as new_output:
         subprocess.Popen([sys.executable, '-c', 'import os; print("HORK" in os.environ)'],
                          stdout=new_output).wait()
         new_output.seek(0)
         self.assertEquals('False\n', new_output.read())
 
   def test_environment_negation(self):
-    with temporary_file() as output:
+    with temporary_file(binary_mode=False) as output:
       with environment_as(HORK='BORK'):
         with environment_as(HORK=None):
           # test that the variable is cleared
@@ -67,7 +68,7 @@ class ContextutilTest(unittest.TestCase):
   def test_hermetic_environment_subprocesses(self):
     self.assertIn('USER', os.environ)
     with hermetic_environment_as(**dict(AAA='333')):
-      output = subprocess.check_output('env', shell=True)
+      output = subprocess.check_output('env', shell=True).decode('utf-8')
       self.assertNotIn('USER=', output)
       self.assertIn('AAA', os.environ)
       self.assertEquals(os.environ['AAA'], '333')
@@ -77,12 +78,13 @@ class ContextutilTest(unittest.TestCase):
   def test_hermetic_environment_unicode(self):
     UNICODE_CHAR = '¡'
     ENCODED_CHAR = UNICODE_CHAR.encode('utf-8')
+    expected_output = UNICODE_CHAR if PY3 else ENCODED_CHAR
     with environment_as(**dict(XXX=UNICODE_CHAR)):
-      self.assertEquals(os.environ['XXX'], ENCODED_CHAR)
+      self.assertEquals(os.environ['XXX'], expected_output)
       with hermetic_environment_as(**dict(AAA=UNICODE_CHAR)):
         self.assertIn('AAA', os.environ)
-        self.assertEquals(os.environ['AAA'], ENCODED_CHAR)
-      self.assertEquals(os.environ['XXX'], ENCODED_CHAR)
+        self.assertEquals(os.environ['AAA'], expected_output)
+      self.assertEquals(os.environ['XXX'], expected_output)
 
   def test_simple_pushd(self):
     pre_cwd = os.getcwd()
@@ -223,9 +225,9 @@ class ContextutilTest(unittest.TestCase):
     stdout_data = u('stdout')
     stderr_data = u('stderr')
 
-    with temporary_file() as tmp_stdin,\
-         temporary_file() as tmp_stdout,\
-         temporary_file() as tmp_stderr:
+    with temporary_file(binary_mode=False) as tmp_stdin,\
+         temporary_file(binary_mode=False) as tmp_stdout,\
+         temporary_file(binary_mode=False) as tmp_stderr:
       print(stdin_data, file=tmp_stdin)
       tmp_stdin.seek(0)
       # Read prepared content from stdin, and write content to stdout/stderr.
@@ -274,7 +276,7 @@ class ContextutilTest(unittest.TestCase):
       # Read/write from/to `/dev/null`, which will be validated by the harness as not
       # affecting the tempfiles.
       with stdio_as(stdout_fd=-1, stderr_fd=-1, stdin_fd=-1):
-        self.assertEquals(b'', sys.stdin.read())
+        self.assertEquals('', sys.stdin.read())
         print('garbage', file=sys.stdout)
         print('garbage', file=sys.stderr)
 
