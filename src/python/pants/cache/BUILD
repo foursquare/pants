@@ -3,6 +3,7 @@
 
 python_library(
   dependencies = [
+    '3rdparty/python:boto3',
     '3rdparty/python:requests',
     'src/python/pants/base:build_environment',
     'src/python/pants/base:validation',

@@ -18,6 +18,7 @@ from pants.cache.cache_setup import (
 from pants.cache.local_artifact_cache import LocalArtifactCache
 from pants.cache.resolver import Resolver
 from pants.cache.restful_artifact_cache import RESTfulArtifactCache
+from pants.cache.s3_artifact_cache import S3ArtifactCache
 from pants.subsystem.subsystem import Subsystem
 from pants.task.task import Task
 from pants.testutil.mock_logger import MockLogger

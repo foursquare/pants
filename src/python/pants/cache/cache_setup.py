@@ -13,6 +13,7 @@ from pants.cache.local_artifact_cache import LocalArtifactCache, TempLocalArtifa
 from pants.cache.pinger import BestUrlSelector, Pinger
 from pants.cache.resolver import NoopResolver, Resolver, RESTfulResolver
 from pants.cache.restful_artifact_cache import RESTfulArtifactCache
+from pants.cache.s3_artifact_cache import S3ArtifactCache
 from pants.subsystem.subsystem import Subsystem
 from pants.util.memo import memoized_property
 
