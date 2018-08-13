@@ -351,6 +351,7 @@ python_library(
     'src/python/pants/java/distribution',
     'src/python/pants/java:executor',
     'src/python/pants/util:memo',
+    'src/python/pants/backend/jvm/targets:scala',
   ],
   tags = {"partially_type_checked"},
 )
