@@ -56,7 +56,8 @@ HEAD_SHA=$(git rev-parse --verify HEAD)
 # We add a non-numeric prefix 'git' before the sha in order to avoid a hex sha which happens to
 # contain only [0-9] being parsed as a number -- see #7399.
 # TODO(#7399): mix in the timestamp before the sha instead of 'git' to get monotonic ordering!
-readonly PANTS_UNSTABLE_VERSION="${PANTS_STABLE_VERSION}+git${HEAD_SHA:0:8}"
+readonly UNSTABLE_VERSION="${PANTS_STABLE_VERSION}+git${HEAD_SHA:0:8}"
+readonly PANTS_UNSTABLE_VERSION="${PANTS_UNSTABLE_VERSION:-$UNSTABLE_VERSION}"
 
 readonly DEPLOY_DIR="${ROOT}/dist/deploy"
 readonly DEPLOY_3RDPARTY_WHEELS_PATH="wheels/3rdparty/${HEAD_SHA}"
