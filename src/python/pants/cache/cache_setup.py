@@ -18,6 +18,7 @@ from pants.cache.local_artifact_cache import LocalArtifactCache, TempLocalArtifa
 from pants.cache.pinger import BestUrlSelector, Pinger
 from pants.cache.resolver import NoopResolver, Resolver, RESTfulResolver
 from pants.cache.restful_artifact_cache import RESTfulArtifactCache
+from pants.cache.s3_artifact_cache import S3ArtifactCache
 from pants.subsystem.subsystem import Subsystem
 from pants.util.memo import memoized_property
 
@@ -61,7 +62,7 @@ class CacheSetup(Subsystem):
                   'instead of skipping them.')
     register('--resolver', advanced=True, choices=['none', 'rest'], default='none',
              help='Select which resolver strategy to use for discovering URIs that access '
-                  'artifact caches. none: use URIs from static config options, i.e. '
+                  'http(s) artifact caches. none: use URIs from static config options, i.e. '
                   '--read-from, --write-to. rest: look up URIs by querying a RESTful '
                   'URL, which is a remote address from --read-from, --write-to.')
     register('--read-from', advanced=True, type=list, default=default_cache,
@@ -90,6 +91,14 @@ class CacheSetup(Subsystem):
              help='number of times pinger tries a cache')
     register('--write-permissions', advanced=True, type=str, default=None,
              help='Permissions to use when writing artifacts to a local cache, in octal.')
+    # NOTE(mateo): It would probably be more clear to the consumer to include the Boto3 defaults
+    # explicitely, although it could bitrot.
+    register('--s3-config-file', advanced=True, type=str,
+             help='Boto config file in .ini syntax. Falls back to Boto3 defaults if unset.')
+    register('--s3-credentials-file', advanced=True, type=str,
+             help='AWS credentials file in .ini syntax. Falls back to Boto3 defaults if unset.')
+    register('--s3-profile', advanced=True, type=str, default='default',
+             help='Boto profile to use for accessing S3. Falls back to Boto3 defaults if unset.')
 
   @classmethod
   def create_cache_factory_for_task(cls, task, **kwargs):
@@ -240,9 +249,14 @@ class CacheFactory(object):
     return string_spec.startswith('/') or string_spec.startswith('~')
 
   @staticmethod
-  def is_remote(string_spec):
+  def _is_s3(string_spec):
+    return string_spec.startswith('s3://')
+
+  @classmethod
+  def is_remote(cls, string_spec):
     # both artifact cache and resolver use REST, add new protocols here once they are supported
-    return string_spec.startswith('http://') or string_spec.startswith('https://')
+    return (string_spec.startswith('http://') or string_spec.startswith('https://') or
+            cls._is_s3(string_spec))
 
   def _baseurl(self, url):
     parsed_url = urlparse(url)
@@ -287,13 +301,26 @@ class CacheFactory(object):
                                 dereference=self._options.dereference_symlinks)
 
     def create_remote_cache(remote_spec, local_cache):
-      urls = self.get_available_urls(remote_spec.split('|'))
+      all_urls = remote_spec.split('|')
 
-      if len(urls) > 0:
-        best_url_selector = BestUrlSelector(
-          ['{}/{}'.format(url.rstrip('/'), self._cache_dirname) for url in urls]
-        )
+      if len(all_urls) > 0:
         local_cache = local_cache or TempLocalArtifactCache(artifact_root, compression)
+        if any(map(self._is_s3, all_urls)):
+          if len(all_urls) != 1:
+            raise InvalidCacheSpecError('S3 Cache only supports a single entry, got: {0}'.format(
+              remote_spec))
+          return S3ArtifactCache(
+            self._options.s3_credentials_file,
+            self._options.s3_config_file,
+            self._options.s3_profile,
+            artifact_root,
+            all_urls[0],
+            local_cache,
+          )
+        pingable = self.get_available_urls(all_urls)
+        best_url_selector = BestUrlSelector(
+          ['{}/{}'.format(url.rstrip('/'), self._cache_dirname) for url in pingable]
+        )
         return RESTfulArtifactCache(
           artifact_root,
           best_url_selector,
