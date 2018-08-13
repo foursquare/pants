@@ -9,6 +9,7 @@ from builtins import open
 
 from pants.backend.jvm.targets.jar_library import JarLibrary
 from pants.backend.jvm.targets.jvm_target import JvmTarget
+from pants.backend.jvm.targets.scala_library import ScalaLibrary
 from pants.backend.jvm.tasks.jvmdoc_gen import Jvmdoc, JvmdocGen
 from pants.java.distribution.distribution import DistributionLocator
 from pants.java.executor import SubprocessExecutor
@@ -29,7 +30,7 @@ class JavadocGen(JvmdocGen):
 
   def execute(self):
     def is_java(target):
-      return target.has_sources('.java')
+      return target.has_sources('.java') and not isinstance(target, ScalaLibrary)
 
     self.generate_doc(is_java, self.create_javadoc_command)
 
