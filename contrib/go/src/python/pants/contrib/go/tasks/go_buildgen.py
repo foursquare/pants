@@ -20,6 +20,7 @@ from pants.contrib.go.targets.go_binary import GoBinary
 from pants.contrib.go.targets.go_library import GoLibrary
 from pants.contrib.go.targets.go_local_source import GoLocalSource
 from pants.contrib.go.targets.go_remote_library import GoRemoteLibrary
+from pants.contrib.go.targets.go_thrift_library import GoThriftLibrary
 from pants.contrib.go.tasks.go_task import GoTask
 
 
