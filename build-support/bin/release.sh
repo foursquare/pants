@@ -48,6 +48,12 @@ function find_pkg() {
 }
 
 function find_plat_name() {
+  # I have no idea if this could have side-effects. But I think
+  # normally it can be set in .ini.
+  # TODO(mateo): Get the entire fleet on 10.13 if we ship the native engine and remove this.
+  if [[ "$(uname)" == "Darwin" ]]; then
+    echo "macosx-10.12-x86_64"
+  else
   # See: https://www.python.org/dev/peps/pep-0425/#id13
   "${PY}" << EOF
 from __future__ import print_function
@@ -55,6 +61,7 @@ from distutils.util import get_platform
 
 print(get_platform().replace('-', '_').replace('.', '_'))
 EOF
+  fi
 }
 
 #
