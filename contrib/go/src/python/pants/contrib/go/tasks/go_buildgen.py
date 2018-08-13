@@ -24,6 +24,7 @@ from pants.contrib.go.targets.go_binary import GoBinary
 from pants.contrib.go.targets.go_library import GoLibrary
 from pants.contrib.go.targets.go_local_source import GoLocalSource
 from pants.contrib.go.targets.go_remote_library import GoRemoteLibrary
+from pants.contrib.go.targets.go_thrift_library import GoThriftLibrary
 from pants.contrib.go.tasks.go_task import GoTask
 
 
@@ -69,7 +70,7 @@ class GoTargetGenerator(object):
     existing = self._build_graph.get_target(local_address)
     if not existing:
       self._build_graph.inject_synthetic_target(address=local_address, target_type=target_type)
-    elif existing and not isinstance(existing, target_type):
+    elif existing and not isinstance(existing, target_type) and not isinstance(existing, GoThriftLibrary):
       raise self.WrongLocalSourceTargetTypeError('{} should be a {}'
                                                  .format(existing, target_type.__name__))
 
@@ -107,6 +108,15 @@ class GoTargetGenerator(object):
     src_path = os.path.join(gopath, 'src', import_path)
     safe_mkdir(src_path)
     package_src_root = os.path.join(get_buildroot(), local_address.spec_path)
+    internal = self._build_graph.get_target(local_address)
+
+    if isinstance(internal, GoThriftLibrary):
+
+      package = os.path.basename(import_path)
+      dummy_file = os.path.join(src_path, '{}.go'.format(package))
+      with safe_open(dummy_file, 'w') as fp:
+        fp.write('package {}'.format(package))
+
     for source_file in os.listdir(package_src_root):
       source_path = os.path.join(package_src_root, source_file)
       if GoLocalSource.is_go_source(source_path):
