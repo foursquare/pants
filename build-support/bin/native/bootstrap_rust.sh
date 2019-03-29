@@ -31,7 +31,7 @@ function bootstrap_rust() {
     log "A pants owned rustup installation could not be found, installing via the instructions at" \
         "https://www.rustup.rs ..."
     local -r rustup_tmp=$(mktemp -t pants.rustup.XXXXXX)
-    curl https://sh.rustup.rs -sSf > ${rustup_tmp}
+    curl https://sh.rustup.rs -sSf > ${rustup_tmp} || (echo "Bad curl, trying wget" && wget https://sh.rustup.rs -O- > ${rustup})
     # NB: rustup installs itself into CARGO_HOME, but fetches toolchains into RUSTUP_HOME.
     sh ${rustup_tmp} -y --no-modify-path --default-toolchain none 1>&2
     rm -f ${rustup_tmp}
