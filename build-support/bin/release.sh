@@ -110,10 +110,10 @@ REQUIREMENTS_3RDPARTY_FILES=(
 # dependencies into the pantsbuild.pants venv.
 function execute_packaged_pants_with_internal_backends() {
   pip install --ignore-installed \
-    -r pants-plugins/3rdparty/python/requirements.txt &> /dev/null && \
+    -r ${ROOT}/pants-plugins/3rdparty/python/requirements.txt &> /dev/null && \
   pants \
     --no-verify-config \
-    --pythonpath="['pants-plugins/src/python']" \
+    --pythonpath="['${ROOT}/pants-plugins/src/python']" \
     --backend-packages="[\
         'pants.backend.codegen',\
         'pants.backend.docgen',\
