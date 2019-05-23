@@ -17,5 +17,5 @@ RUN yum install -y \
   libffi-devel \
   openssl-devel
 
-# By default, execute in an environment with python27 enabled.
+# By default, executes in an environment with python27 enabled.
 ENTRYPOINT ["/usr/bin/scl", "enable", "python27", "devtoolset-7",  "--"]
