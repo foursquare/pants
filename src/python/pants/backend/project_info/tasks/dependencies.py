@@ -50,24 +50,23 @@ class Dependencies(ConsoleTask):
 
   def console_output(self, unused_method_argument):
     if self.get_options().output_format == 'json':
-      dependencies = defaultdict(list)
+      deps = defaultdict(list)
       for target in self.context.target_roots:
         if self._transitive:
           trans_deps = OrderedSet()
           target.walk(trans_deps.add)
-          dependencies.update({target.address.spec: trans_deps})
+          deps.update({target.address.spec: trans_deps})
         else:
-          dependencies.update({target.address.spec: target.dependencies})
+          deps.update({target.address.spec: target.dependencies})
 
-      for target in dependencies:
+      for tgt in deps:
         # Some nodes are ScalaLibrary, JarLibrary, etc wrapped around BuildFileAddress and some are string paths
-        string_paths = filter(lambda x: type(x) == str, dependencies[target])
-        libs = filter(lambda x: type(x) != str, dependencies[target])
+        string_paths = filter(lambda x: type(x) == str, deps[tgt])
+        libs = filter(lambda x: type(x) != str, deps[tgt])
         lib_paths = [dep.address.spec for dep in libs]
+        deps.update({tgt: sorted(string_paths + lib_paths)})
 
-        dependencies.update({target: sorted(string_paths + lib_paths)})
-
-      yield json.dumps(dependencies, indent=4, separators=(',', ': '), sort_keys=True)
+      yield json.dumps(deps, indent=4, separators=(',', ': '), sort_keys=True)
 
     else:
       deps = OrderedSet()
