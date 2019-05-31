@@ -13,6 +13,8 @@ from pants.backend.jvm.targets.jvm_target import JvmTarget
 from pants.base.exceptions import TaskError
 from pants.base.payload_field import JarsField, PythonRequirementsField
 from pants.task.console_task import ConsoleTask
+from collections import defaultdict
+import json
 
 
 class Dependencies(ConsoleTask):
@@ -34,6 +36,8 @@ class Dependencies(ConsoleTask):
     register('--transitive', default=True, type=bool,
              help='List transitive dependencies. Disable to only list dependencies defined '
                   'in target BUILD file(s).')
+    register('--output-format', default='text', choices=['text', 'json'],
+             help='Output format of results.')
 
   def __init__(self, *args, **kwargs):
     super(Dependencies, self).__init__(*args, **kwargs)
@@ -45,23 +49,42 @@ class Dependencies(ConsoleTask):
       raise TaskError('At most one of --internal-only or --external-only can be selected.')
 
   def console_output(self, unused_method_argument):
-    ordered_closure = OrderedSet()
-    for target in self.context.target_roots:
-      if self._transitive:
-        target.walk(ordered_closure.add)
-      else:
-        ordered_closure.update(target.dependencies)
+    if self.get_options().output_format == 'json':
+      deps = defaultdict(list)
+      for target in self.context.target_roots:
+        if self._transitive:
+          trans_deps = OrderedSet()
+          target.walk(trans_deps.add)
+          deps.update({target.address.spec: trans_deps})
+        else:
+          deps.update({target.address.spec: target.dependencies})
 
-    for tgt in ordered_closure:
-      if not self.is_external_only:
-        yield tgt.address.spec
-      if not self.is_internal_only:
-        # TODO(John Sirois): We need an external payload abstraction at which point knowledge
-        # of jar and requirement payloads can go and this hairball will be untangled.
-        if isinstance(tgt.payload.get_field('requirements'), PythonRequirementsField):
-          for requirement in tgt.payload.requirements:
-            yield str(requirement.requirement)
-        elif isinstance(tgt.payload.get_field('jars'), JarsField):
-          for jar in tgt.payload.jars:
-            data = dict(org=jar.org, name=jar.name, rev=jar.rev)
-            yield ('{org}:{name}:{rev}' if jar.rev else '{org}:{name}').format(**data)
+      for tgt in deps:
+        # Some nodes are ScalaLibrary, JarLibrary, etc wrapped around BuildFileAddress and some are string paths
+        string_paths = filter(lambda x: type(x) == str, deps[tgt])
+        libs = filter(lambda x: type(x) != str, deps[tgt])
+        lib_paths = [dep.address.spec for dep in libs]
+        deps.update({tgt: sorted(string_paths + lib_paths)})
+
+      yield json.dumps(deps, indent=4, separators=(',', ': '), sort_keys=True)
+
+    else:
+      deps = OrderedSet()
+      for target in self.context.target_roots:
+        if self._transitive:
+          target.walk(deps.add)
+        else:
+          deps.update(target.dependencies)
+      for tgt in deps:
+        if not self.is_external_only:
+          yield tgt.address.spec
+        if not self.is_internal_only:
+          # TODO(John Sirois): We need an external payload abstraction at which point knowledge
+          # of jar and requirement payloads can go and this hairball will be untangled.
+          if isinstance(tgt.payload.get_field('requirements'), PythonRequirementsField):
+            for requirement in tgt.payload.requirements:
+              yield str(requirement.requirement)
+          elif isinstance(tgt.payload.get_field('jars'), JarsField):
+            for jar in tgt.payload.jars:
+              data = dict(org=jar.org, name=jar.name, rev=jar.rev)
+              yield ('{org}:{name}:{rev}' if jar.rev else '{org}:{name}').format(**data)
