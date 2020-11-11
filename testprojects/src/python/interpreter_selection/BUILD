@@ -7,9 +7,9 @@
 python_library(
   name = 'echo_interpreter_version_lib',
   sources = ['echo_interpreter_version.py'],
-  dependencies = [],
   # Play with this to test interpreter selection in the pex machinery.
-  compatibility = ['CPython>=2.7,<4']
+  compatibility = ['CPython>=2.7'],
+  tags={"nolint"},
 )
 
 python_binary(
@@ -18,7 +18,8 @@ python_binary(
     ':echo_interpreter_version_lib',
   ],
   entry_point = 'interpreter_selection.echo_interpreter_version',
-  compatibility = ['CPython>=3.3']
+  compatibility = ['CPython>=3.3'],
+  tags={"nolint"},
 )
 
 python_binary(
@@ -27,7 +28,8 @@ python_binary(
     ':echo_interpreter_version_lib',
   ],
   entry_point = 'interpreter_selection.echo_interpreter_version',
-  compatibility = ['CPython>=2.7,<3']
+  compatibility = ['CPython>=2.7,<3'],
+  tags={"nolint"},
 )
 
 # Note: Used by tests, but also useful for manual testing.
@@ -37,23 +39,25 @@ python_binary(
     ':echo_interpreter_version_lib',
   ],
   entry_point = 'interpreter_selection.echo_interpreter_version',
+  tags={"nolint"},
 )
 
 # Note: Used by tests, but also useful for manual testing.
 python_binary(
-  name = 'deliberately_conficting_compatibility',
+  name = 'deliberately_conflicting_compatibility',
   dependencies = [
     ':echo_interpreter_version_lib',
   ],
   entry_point = 'interpreter_selection.echo_interpreter_version',
-  compatibility = ['CPython<2.7']
+  compatibility = ['CPython<2.7'],
+  tags={"nolint"},
 )
 
 python_library(
   name = 'die_lib',
   sources = ['die.py'],
-  dependencies = [],
-  compatibility = ['CPython>=2.7,<3']
+  compatibility = ['CPython>=2.7,<3'],
+  tags={"nolint"},
 )
 
 python_binary(
@@ -62,4 +66,5 @@ python_binary(
     ':die_lib',
   ],
   entry_point = 'interpreter_selection.die',
+  tags={"nolint"},
 )

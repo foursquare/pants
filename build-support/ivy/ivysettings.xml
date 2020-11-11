@@ -10,9 +10,8 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
   <property name="m2.repo.relpath" value="[organisation]/[module]/[revision]"/>
   <property name="m2.repo.pom" value="${m2.repo.relpath}/[module]-[revision].pom"/>
   <property name="m2.repo.artifact"
-            value="${m2.repo.relpath}/[artifact](-[classifier])-[revision].[ext]"/>
+            value="${m2.repo.relpath}/[artifact]-[revision](-[classifier]).[ext]"/>
   <property name="m2.repo.dir" value="${user.home}/.m2/repository" override="false"/>
-  <property name="kythe.artifact" value="[organisation]/[artifact]/[revision]/[artifact]-[revision].[ext]"/>
   <!-- for retrieving jacoco snapshot, remove when a version containing cli is released -->
   <!-- see https://github.com/pantsbuild/pants/issues/5010 -->
   <property name="sonatype.nexus.snapshots.url" value="https://oss.sonatype.org/content/repositories/snapshots/" />
@@ -26,6 +25,13 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
            This can lead to jars downloading without their transitive deps which leads
            to confusing failures later when classpaths are constructed and used.
            We setup the maven central resolver to require successful pom downloads here. -->
+
+      <!-- First try RBE's maven central mirror, as we can get throttled by
+           maven central due to all RBE traffic appearing to them as coming from a single IP.
+           There's no harm in trying this even outside RBE, as it is world-visible. -->
+      <ibiblio name="maven-central-mirror" m2compatible="true" descriptor="required"
+               root="https://maven-central.storage-download.googleapis.com/maven2"/>
+
       <ibiblio name="maven-central" m2compatible="true" descriptor="required"/>
 
       <!-- The mvn standard local filesystem repo/cache -->
@@ -34,10 +40,6 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
         <artifact pattern="${m2.repo.dir}/${m2.repo.artifact}"/>
       </filesystem>
 
-      <!-- Custom repo for Kythe jars, as Google don't currently publish them anywhere. -->
-      <url name="benjyw/binhost">
-        <artifact pattern="https://github.com/benjyw/binhost/raw/master/${kythe.artifact}" />
-      </url>
     </chain>
   </resolvers>
 </ivysettings>

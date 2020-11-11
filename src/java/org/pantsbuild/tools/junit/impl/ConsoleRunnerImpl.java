@@ -28,6 +28,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.apache.commons.io.output.TeeOutputStream;
 import org.junit.runner.Computer;
 import org.junit.runner.Description;
@@ -39,13 +41,17 @@ import org.junit.runner.manipulation.Filter;
 import org.junit.runner.notification.Failure;
 import org.junit.runner.notification.RunListener;
 import org.junit.runner.notification.RunNotifier;
+import org.junit.runner.notification.StoppedByUserException;
 import org.junit.runners.model.InitializationError;
+import org.junit.runners.model.RunnerBuilder;
 import org.kohsuke.args4j.Argument;
 import org.kohsuke.args4j.CmdLineException;
 import org.kohsuke.args4j.CmdLineParser;
 import org.kohsuke.args4j.Option;
 import org.kohsuke.args4j.spi.StringArrayOptionHandler;
+import org.kohsuke.args4j.spi.StringOptionHandler;
 import org.pantsbuild.args4j.InvalidCmdLineArgumentException;
+import org.pantsbuild.args4j.StringArgumentsHandler;
 import org.pantsbuild.junit.annotations.TestParallel;
 import org.pantsbuild.junit.annotations.TestSerial;
 import org.pantsbuild.tools.junit.impl.experimental.ConcurrentComputer;
@@ -314,6 +320,11 @@ public class ConsoleRunnerImpl {
     public byte[] readErr(Class<?> testClass) throws IOException {
       return suiteCaptures.get(testClass).readErr();
     }
+
+    @Override
+    public void close(Class<?> testClass) throws IOException {
+      suiteCaptures.get(testClass).close();
+    }
   }
 
   /**
@@ -321,17 +332,13 @@ public class ConsoleRunnerImpl {
    */
   public static class FailFastListener extends RunListener {
     private final RunNotifier runNotifier;
-    private final Result result = new Result();
 
     public FailFastListener(RunNotifier runNotifier) {
       this.runNotifier = runNotifier;
-      this.runNotifier.addListener(result.createListener());
     }
 
     @Override
-    public void testFailure(Failure failure) throws Exception {
-      runNotifier.fireTestFinished(failure.getDescription());
-      runNotifier.fireTestRunFinished(result);
+    public void testFailure(Failure failure) {
       runNotifier.pleaseStop();
     }
   }
@@ -353,7 +360,12 @@ public class ConsoleRunnerImpl {
 
     @Override public void run(RunNotifier notifier) {
       notifier.addListener(new FailFastListener(notifier));
-      wrappedRunner.run(notifier);
+      try {
+        wrappedRunner.run(notifier);
+      } catch (StoppedByUserException ignore) {
+        // NB: By swallowing StoppedByUserException here, we ensure that the RunFinished callback is
+        // fired once, by JUnitCore.
+      }
     }
   }
 
@@ -374,6 +386,8 @@ public class ConsoleRunnerImpl {
   private final boolean useExperimentalRunner;
   private final SwappableStream<PrintStream> swappableOut;
   private final SwappableStream<PrintStream> swappableErr;
+  private final Set<Thread> shutdownHooks = Sets.newHashSet(); // for use in tests
+  private Collection<String> testsToRun;
 
   ConsoleRunnerImpl(
       boolean failFast,
@@ -410,11 +424,25 @@ public class ConsoleRunnerImpl {
     this.useExperimentalRunner = useExperimentalRunner;
   }
 
+  // by holding on to the tests to run, we can create a runner that is ready to go
+  // without beginning the run (which is useful in the tests for the runner itself)
+  private void setTestsToRun(Collection<String> tests) {
+    this.testsToRun = tests;
+  }
+
   void run(Collection<String> tests) {
+    setTestsToRun(tests);
+    run();
+  }
+
+  @VisibleForTesting
+  public void run() {
     System.setOut(new PrintStream(swappableOut));
     System.setErr(new PrintStream(swappableErr));
 
     JUnitCore core = new JUnitCore();
+
+    int numShutdownHooks = 0;
 
     if (testListener != null) {
       core.addListener(testListener);
@@ -428,8 +456,11 @@ public class ConsoleRunnerImpl {
         new StreamCapturingListener(outdir, outputMode, swappableOut, swappableErr);
     core.addListener(streamCapturingListener);
 
+    RunListener xmlListener = null;
     if (xmlReport) {
-      core.addListener(new AntJunitXmlReportListener(outdir, streamCapturingListener));
+      xmlListener = new AntJunitXmlReportListener(outdir, streamCapturingListener);
+      core.addListener(xmlListener);
+      numShutdownHooks++; // later we will register a shutdown hook for writing XML output
     }
 
     if (perTestTimer) {
@@ -438,17 +469,38 @@ public class ConsoleRunnerImpl {
       core.addListener(new ConsoleListener(swappableOut.getOriginal()));
     }
 
-    ShutdownListener shutdownListener = new ShutdownListener(swappableOut.getOriginal());
-    core.addListener(shutdownListener);
+    ShutdownListener consoleShutdownListener =
+      new ShutdownListener(new ConsoleListener(swappableOut.getOriginal()));
+    core.addListener(consoleShutdownListener);
+
     // Wrap test execution with registration of a shutdown hook that will ensure we
     // never exit silently if the VM does.
-    final Thread unexpectedExitHook =
-        createUnexpectedExitHook(shutdownListener, swappableOut.getOriginal());
-    Runtime.getRuntime().addShutdownHook(unexpectedExitHook);
+    numShutdownHooks++;
+    final CountDownLatch haltAfterUnexpectedShutdown = new CountDownLatch(numShutdownHooks);
+    final Thread unexpectedExitHook = createUnexpectedExitHook(
+      consoleShutdownListener,
+      swappableOut.getOriginal(),
+      haltAfterUnexpectedShutdown);
+    addShutdownHook(unexpectedExitHook);
+
+    // handle writing XML output when the tests time out and are terminated by pants
+    if (xmlListener != null) {
+      final ShutdownListener xmlShutdownListener = new ShutdownListener(xmlListener);
+      core.addListener(xmlShutdownListener);
+
+      Thread xmlShutdownHook = new Thread() {
+        @Override
+        public void run() {
+          xmlShutdownListener.unexpectedShutdown();
+          haltAfterUnexpectedShutdown.countDown();
+        }
+      };
+      addShutdownHook(xmlShutdownHook);
+    }
 
     int failures = 1;
     try {
-      Collection<Spec> parsedTests = new SpecParser(tests).parse();
+      Collection<Spec> parsedTests = new SpecParser(testsToRun).parse();
       if (useExperimentalRunner) {
         failures = runExperimental(parsedTests, core);
       } else {
@@ -461,15 +513,20 @@ public class ConsoleRunnerImpl {
     } finally {
       // If we're exiting via a thrown exception, we'll get a better message by letting it
       // propagate than by halt()ing.
-      Runtime.getRuntime().removeShutdownHook(unexpectedExitHook);
+      removeShutdownHook(unexpectedExitHook);
     }
     exit(failures == 0 ? 0 : 1);
   }
 
   /**
-   * Returns a thread that records a system exit to the listener, and then halts(1).
+   * Returns a thread that records a system exit to the listener,
+   * and then halts(1) after other unexpected exit hooks that use the given CountDownLatch.
    */
-  private Thread createUnexpectedExitHook(final ShutdownListener listener, final PrintStream out) {
+  private Thread createUnexpectedExitHook(
+    final ShutdownListener listener,
+    final PrintStream out,
+    final CountDownLatch haltAfter
+  ) {
     return new Thread() {
       @Override public void run() {
         try {
@@ -479,13 +536,37 @@ public class ConsoleRunnerImpl {
           out.println(e);
           e.printStackTrace(out);
         }
-        // This error might be a call to `System.exit(0)` in a test, which we definitely do
-        // not want to go unnoticed.
-        out.println("FATAL: VM exiting unexpectedly.");
-        out.flush();
-        Runtime.getRuntime().halt(1);
+        try {
+          // Other shutdown hooks might still need to write test results,
+          // so wait for them (up to 15 seconds) to finish before halting.
+          haltAfter.countDown();
+          long awaiting = haltAfter.getCount();
+          if (awaiting > 0) out.println("Waiting for " + awaiting + "shutdown hooks to complete");
+          haltAfter.await(15, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+          out.println(e);
+          e.printStackTrace(out);
+        } finally {
+          if (callSystemExitOnFinish) {
+            // This error might be a call to `System.exit(0)` in a test, which we definitely do
+            // not want to go unnoticed.
+            out.println("FATAL: VM exiting unexpectedly.");
+            out.flush();
+            Runtime.getRuntime().halt(1);
+          }
+        }
       }
     };
+  }
+
+  private void addShutdownHook(Thread hook) {
+    shutdownHooks.add(hook);
+    Runtime.getRuntime().addShutdownHook(hook);
+  }
+
+  private void removeShutdownHook(Thread hook) {
+    shutdownHooks.remove(hook);
+    Runtime.getRuntime().removeShutdownHook(hook);
   }
 
   private int runExperimental(Collection<Spec> parsedTests, JUnitCore core)
@@ -518,8 +599,7 @@ public class ConsoleRunnerImpl {
       throws InitializationError {
     Computer junitComputer = new ConcurrentComputer(concurrency, parallelThreads);
     Class<?>[] classes = specSet.extract(concurrency).classes();
-    CustomAnnotationBuilder builder =
-        new CustomAnnotationBuilder(numRetries, swappableErr.getOriginal());
+    RunnerBuilder builder = createCustomBuilder(swappableErr.getOriginal());
     Runner suite = junitComputer.getSuite(builder, classes);
     return core.run(Request.runner(suite)).getFailureCount();
   }
@@ -530,27 +610,24 @@ public class ConsoleRunnerImpl {
       requests = setFilterForTestShard(requests);
     }
 
+    Runner requestRunner;
     if (this.parallelThreads > 1) {
-      ConcurrentCompositeRequestRunner concurrentRunner = new ConcurrentCompositeRequestRunner(
+      requestRunner = new ConcurrentCompositeRequestRunner(
           requests, this.defaultConcurrency, this.parallelThreads);
-      if (failFast) {
-        return core.run(new FailFastRunner(concurrentRunner)).getFailureCount();
-      } else {
-        return core.run(concurrentRunner).getFailureCount();
-      }
+    } else {
+      requestRunner = new CompositeRequestRunner(requests);
     }
+    requestRunner = maybeWithFailFastRunner(requestRunner);
 
-    int failures = 0;
-    Result result;
-    for (Request request : requests) {
-      if (failFast) {
-        result = core.run(new FailFastRunner(request.getRunner()));
-      } else {
-        result = core.run(request);
-      }
-      failures += result.getFailureCount();
+    return core.run(requestRunner).getFailureCount();
+  }
+
+  private Runner maybeWithFailFastRunner(Runner runner) {
+    if (failFast) {
+      return new FailFastRunner(runner);
+    } else {
+      return runner;
     }
-    return failures;
   }
 
   private List<Request> legacyParseRequests(PrintStream err, Collection<Spec> specs) {
@@ -570,15 +647,11 @@ public class ConsoleRunnerImpl {
     if (!classes.isEmpty()) {
       if (this.perTestTimer || this.parallelThreads > 1) {
         for (Class<?> clazz : classes) {
-          if (legacyShouldRunParallelMethods(clazz)) {
-            if (ScalaTestUtil.isScalaTestTest(clazz)) {
-              // legacy and scala doesn't work easily.  just adding the class
-              requests.add(new AnnotatedClassRequest(clazz, numRetries, err));
-            } else {
-              testMethods.addAll(TestMethod.fromClass(clazz));
-            }
+          // legacy doesn't support scala test tests, so those are run as classes.
+          if (legacyShouldRunParallelMethods(clazz) && !ScalaTestUtil.isScalaTestTest(clazz)) {
+            testMethods.addAll(TestMethod.fromClass(clazz));
           } else {
-            requests.add(new AnnotatedClassRequest(clazz, numRetries, err));
+            requests.add(createAnnotatedClassRequest(err, clazz));
           }
         }
       } else {
@@ -586,8 +659,7 @@ public class ConsoleRunnerImpl {
         // requests.add(Request.classes(classes.toArray(new Class<?>[classes.size()])));
         // does, except that it instantiates our own builder, needed to support retries.
         try {
-          CustomAnnotationBuilder builder =
-              new CustomAnnotationBuilder(numRetries, err);
+          RunnerBuilder builder = createCustomBuilder(err);
           Runner suite = new Computer().getSuite(
               builder, classes.toArray(new Class<?>[classes.size()]));
           requests.add(Request.runner(suite));
@@ -598,10 +670,18 @@ public class ConsoleRunnerImpl {
       }
     }
     for (TestMethod testMethod : testMethods) {
-      requests.add(new AnnotatedClassRequest(testMethod.clazz, numRetries, err)
+      requests.add(createAnnotatedClassRequest(err, testMethod.clazz)
           .filterWith(Description.createTestDescription(testMethod.clazz, testMethod.name)));
     }
     return requests;
+  }
+
+  private AnnotatedClassRequest createAnnotatedClassRequest(PrintStream err, Class<?> clazz) {
+    return new AnnotatedClassRequest(clazz, numRetries, err);
+  }
+
+  private RunnerBuilder createCustomBuilder(PrintStream original) {
+    return new CustomAnnotationBuilder(numRetries, original);
   }
 
   private boolean legacyShouldRunParallelMethods(Class<?> clazz) {
@@ -640,7 +720,7 @@ public class ConsoleRunnerImpl {
 
       @Override
       public boolean shouldRun(Description desc) {
-        if (desc.isSuite()) {
+        if (desc.isSuite() && !ScalaTestUtil.isScalaTestTest(desc.getTestClass())) {
           return true;
         }
         String descString = Util.getPantsFriendlyDisplayName(desc);
@@ -686,12 +766,32 @@ public class ConsoleRunnerImpl {
     return filteredRequests;
   }
 
+  @VisibleForTesting
+  void runShutdownHooks() throws InterruptedException {
+    for(Thread hook: shutdownHooks) {
+      hook.start();
+    }
+    for(Thread hook: shutdownHooks) {
+      hook.join(10000); // wait for all hooks to complete, up to 10 seconds each
+    }
+  }
+
   /**
    * Launcher for JUnitConsoleRunner.
    *
    * @param args options from the command line
    */
   public static void main(String[] args) {
+    mainImpl(args).run();
+  }
+
+  /**
+   * As main, but returns the ConsoleRunnerImpl instance and doesn't begin the test run.
+   * For use in tests.
+   *
+   * @param args options from the command line
+   */
+  public static ConsoleRunnerImpl mainImpl(String[] args) {
     /**
      * Command line option bean.
      */
@@ -784,10 +884,10 @@ public class ConsoleRunnerImpl {
 
       @Argument(usage = "Names of junit test classes or test methods to run.  Names prefixed "
                         + "with @ are considered arg file paths and these will be loaded and the "
-                        + "whitespace delimited arguments found inside added to the list",
+                        + "newline delimited arguments found inside added to the list.",
                 required = true,
                 metaVar = "TESTS",
-                handler = StringArrayOptionHandler.class)
+                handler = StringArgumentsHandler.class)
       private String[] tests = {};
 
       @Option(name="-use-experimental-runner",
@@ -799,10 +899,7 @@ public class ConsoleRunnerImpl {
     CmdLineParser parser = new CmdLineParser(options);
     try {
       parser.parseArgument(args);
-    } catch (CmdLineException e) {
-      parser.printUsage(System.err);
-      exit(1);
-    } catch (InvalidCmdLineArgumentException e) {
+    } catch (CmdLineException | InvalidCmdLineArgumentException e) {
       parser.printUsage(System.err);
       exit(1);
     }
@@ -826,21 +923,8 @@ public class ConsoleRunnerImpl {
             new PrintStream(new BufferedOutputStream(System.out), true),
             new PrintStream(new BufferedOutputStream(System.err), true));
 
-    List<String> tests = Lists.newArrayList();
-    for (String test : options.tests) {
-      if (test.startsWith("@")) {
-        try {
-          String argFileContents = Files.toString(new File(test.substring(1)), Charsets.UTF_8);
-          tests.addAll(Arrays.asList(argFileContents.split("\\s+")));
-        } catch (IOException e) {
-          System.err.printf("Failed to load args from arg file %s: %s\n", test, e.getMessage());
-          exit(1);
-        }
-      } else {
-        tests.add(test);
-      }
-    }
-    runner.run(tests);
+    runner.setTestsToRun(Lists.newArrayList(options.tests));
+    return runner;
   }
 
   /**

@@ -50,21 +50,25 @@ The referred-to
 
 (If your circularly-referencing `*.scala` and `*.java` files are in the *same* directory, you don't
 need separate `java_library` and `scala_library` targets. Instead, use
-`scala_library(sources=globs('*.scala', '*.java'),...)`.)
+`scala_library(sources=['*.scala', '*.java'],...)`.)
 
 Scala Version
 -------------
 
 You can override the default version of the entire Scala toolchain with the single
-`--scala-platform-version` option. You can set that option to one of the supported Scala versions
+`--scala-version` option. You can set that option to one of the supported Scala versions
 (currently "2.10" or "2.11"), or to the special value "custom".
 
-If you choose a custom version, you must use the `--scala-platform-runtime-spec`,
-`--scala-platform-repl-spec` and `--scala-platform-suffix-version` options to provide
+If you choose a custom version, you must use the `--scala-runtime-spec`,
+`--scala-repl-spec` and `--scala-suffix-version` options to provide
 information about your custom Scala version.  The first two of these default to the target
 addresses `//:scala-library` and `//:scala-repl` respectively, so you can simply define those
 targets (in the root `BUILD.tools` file by convention) to point to the relevant JARs.
 
+Scala 3rdparty Jars
+-------------------
+
+You can depend on Scala-specific [[3rdparty jars|pants('examples/src/java/org/pantsbuild/example:readme')]] using the <a pantsref="bdict_scala_jar">`scala_jar`</a> symbol. This will append e.g. `_2.12` to the name field of the <a pantsref="bdict_jar">`jar`</a>. The version string used is whatever the `--scala-version` is set to, or, if it is "custom", then the `--scala-suffix-version`.
 
 Scala REPL
 ----------
@@ -112,6 +116,47 @@ supported by default.  Most other scala test frameworks support running with JUn
 class/trait or via a `@RunWith` annotation; so you can use
 `junit_tests` for your scala tests as well.
 
+### Scala Code Coverage: Scoverage
+
+Code coverage reports for Scala projects can be generated with the help of Scoverage. To generate a
+Scoverage report, run the test command with the following additional option(s):
+
+    :::bash
+    ./pants --scoverage-enable-scoverage test ${TARGETS}
+
+As an example, scoverage reports for the `example` project can be generated as:
+
+    :::bash
+    ./pants --scoverage-enable-scoverage test examples/tests/scala/org/pantsbuild/example/hello/welcome
+
+Scoverage supports the following options:   
+`--scoverage-enable-scoverage` (required)   
+Specifies whether to generate scoverage reports for scala test targets.
+Default value is False. If True, implies `--test-junit-coverage-processor=scoverage.`
+
+`--scoverage-report-target-filters` (optional)   
+Regex patterns passed to scoverage report generator, specifying which targets should be
+included in reports. All targets matching any of the patterns will be
+included when generating reports. If no targets are specified, all
+targets are included, which would be the same as specifying ".*" as a filter.
+
+`--scoverage-blacklist-targets` (optional; troubleshooting)   
+Scoverage works by instrumenting targets at compile time. However, some targets cannot be
+instrumented at all as doing so results in exceeding JVM code size limits. Thus, if you receive
+the following error when compiling with scoverage:
+
+    :::bash
+    Could not write class ${CLASS NAME} because it exceeds JVM code size limits.
+    Method ${METHOD NAME} code too large!
+    ... much build output ...
+    FAILURE: Compilation failure: Failed jobs: compile(${FAILED TARGET NAME})
+
+You can prevent instrumenting the failed target by running the command as follows:
+
+    :::bash
+    ./pants --scoverage-enable-scoverage --scoverage-blacklist-targets='["${FAILED TARGET NAME}"]' ${TEST TARGET}
+
+
 Formatting and Linting
 ----------------------
 
@@ -141,23 +186,26 @@ In a `BUILD` file at the root of the repo, define the `semanticdb` compiler plug
       jars = [jar(org='org.scalameta', name='semanticdb-scalac_{}'.format(SCALA_REV), rev='2.0.1')],
     )
 
-Then, reference it from `pants.ini` to load the plugin, and enable semantic rewrites to require
+Note that the explicit full scala version string (`2.11.12`) is required for the semanticdb jar we use here, which is why we can't just use <a pantsref="bdict_jar">`scala_jar`</a> (which would just append e.g. `_2.12` to the name).
+
+Then, reference it from `pants.toml` to load the plugin, and enable semantic rewrites to require
 compilation for `fmt` and `lint`:
 
-    :::ini
-    [compile.zinc]
-    args: [
-        # The `-S` prefix here indicates that zinc should pass this option to scalac rather than
-        # to javac (`-C` prefix).
-        '-S-Yrangepos',
-      ]
+    :::toml
+    [compile.rsc]
+    args = [
+      # The `-S` prefix here indicates that zinc should pass this option to scalac rather than
+      # to javac (`-C` prefix).
+      '-S-Yrangepos',
+    ]
 
-    scalac_plugins: [
-        'semanticdb',
-      ]
+    [scala]
+    scalac_plugins = [
+      'semanticdb',
+    ]
 
     [lint.scalafix]
-    semantic: True
+    semantic = true
 
     [fmt.scalafix]
-    semantic: True
+    semantic = true

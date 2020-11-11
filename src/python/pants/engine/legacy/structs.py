@@ -1,343 +1,378 @@
-# coding=utf-8
 # Copyright 2015 Pants project contributors (see CONTRIBUTORS.md).
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 
-from __future__ import (absolute_import, division, generators, nested_scopes, print_function,
-                        unicode_literals, with_statement)
-
 import logging
-from abc import abstractproperty
+import os.path
+from collections.abc import MutableSequence, MutableSet
+from dataclasses import dataclass
+from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple, Union, cast
 
-from six import string_types
-
-from pants.engine.addressable import addressable_list
-from pants.engine.fs import PathGlobs
-from pants.engine.objects import Locatable
-from pants.engine.struct import Struct, StructWithDeps
+from pants.build_graph.address import Address
+from pants.build_graph.target import Target
+from pants.engine.fs import GlobExpansionConjunction, PathGlobs
+from pants.engine.internals.addressable import addressable_sequence
+from pants.engine.internals.objects import Locatable
+from pants.engine.internals.struct import Struct, StructWithDeps
+from pants.engine.unions import UnionRule, union
 from pants.source import wrapped_globs
+from pants.util.collections import ensure_str_list
 from pants.util.contextutil import exception_logging
-from pants.util.meta import AbstractClass
-from pants.util.objects import Exactly, datatype
-
+from pants.util.meta import classproperty
+from pants.util.objects import Exactly
 
 logger = logging.getLogger(__name__)
 
 
 class TargetAdaptor(StructWithDeps):
-  """A Struct to imitate the existing Target.
+    """A Struct to imitate the existing Target.
 
-  Extends StructWithDeps to add a `dependencies` field marked Addressable.
-  """
-
-  def get_sources(self):
-    """Returns target's non-deferred sources if exists or the default sources if defined.
-
-    NB: once ivy is implemented in the engine, we can fetch sources natively here, and/or
-    refactor how deferred sources are implemented.
-      see: https://github.com/pantsbuild/pants/issues/2997
+    Extends StructWithDeps to add a `dependencies` field marked Addressable.
     """
-    sources = getattr(self, 'sources', None)
-    # N.B. Here we check specifically for `sources is None`, as it's possible for sources
-    # to be e.g. an explicit empty list (sources=[]).
-    if sources is None and self.default_sources_globs is not None:
-      return Globs(*self.default_sources_globs,
-                    spec_path=self.address.spec_path,
-                    exclude=self.default_sources_exclude_globs or [])
-    return sources
 
-  @property
-  def field_adaptors(self):
-    """Returns a tuple of Fields for captured fields which need additional treatment."""
-    with exception_logging(logger, 'Exception in `field_adaptors` property'):
-      sources = self.get_sources()
-      if not sources:
-        return tuple()
-      base_globs = BaseGlobs.from_sources_field(sources, self.address.spec_path)
-      path_globs = base_globs.to_path_globs(self.address.spec_path)
-      return (SourcesField(self.address, 'sources', base_globs.filespecs, path_globs),)
+    # NB: This overridden `__init__()` is weird. We solely have it so that MyPy can infer
+    # `TargetAdaptor.dependencies` as `Tuple[Address, ...]`.
+    def __init__(self, dependencies=None, **kwargs) -> None:
+        super().__init__(dependencies, **kwargs)
+        self.dependencies: Tuple[Address, ...]
 
-  @property
-  def default_sources_globs(self):
-    return None
+    @property
+    def address(self) -> Address:
+        return cast(Address, super().address)
 
-  @property
-  def default_sources_exclude_globs(self):
-    return None
+    def get_sources(self) -> Optional["GlobsWithConjunction"]:
+        """Returns target's non-deferred sources if exists or the default sources if defined.
+
+        NB: once ivy is implemented in the engine, we can fetch sources natively here, and/or
+        refactor how deferred sources are implemented.
+          see: https://github.com/pantsbuild/pants/issues/2997
+        """
+        sources = getattr(self, "sources", None)
+        # N.B. Here we check specifically for `sources is None`, as it's possible for sources
+        # to be e.g. an explicit empty list (sources=[]).
+        if sources is None:
+            if self.default_sources_globs is None:
+                return None
+            default_sources = SourceGlobs(
+                *(
+                    *self.default_sources_globs,
+                    *(f"!{glob}" for glob in self.default_sources_exclude_globs or []),
+                ),
+            )
+            return GlobsWithConjunction(default_sources, GlobExpansionConjunction.any_match)
+
+        source_globs = SourceGlobs.from_sources_field(sources)
+        return GlobsWithConjunction(source_globs, GlobExpansionConjunction.all_match)
+
+    @property
+    def field_adaptors(self) -> Tuple:
+        """Returns a tuple of Fields for captured fields which need additional treatment."""
+        with exception_logging(logger, "Exception in `field_adaptors` property"):
+            conjunction_globs = self.get_sources()
+            if conjunction_globs is None:
+                return tuple()
+
+            sources = conjunction_globs.globs
+            if not sources:
+                return tuple()
+
+            sources_field = SourcesField(
+                address=self.address,
+                arg="sources",
+                source_globs=sources,
+                conjunction=conjunction_globs.conjunction,
+                validate_fn=self.validate_sources,
+            )
+            return (sources_field,)
+
+    @classproperty
+    def default_sources_globs(cls):
+        return None
+
+    @classproperty
+    def default_sources_exclude_globs(cls):
+        return None
+
+    def validate_sources(self, sources):
+        """" Validate that the sources argument is allowed.
+
+        Examples may be to check that the number of sources is correct, that file extensions are as
+        expected, etc.
+
+        TODO: Replace this with some kind of field subclassing, as per
+        https://github.com/pantsbuild/pants/issues/4535
+
+        :param sources EagerFilesetWithSpec resolved sources.
+        """
+
+    # TODO: do we want to support the `extension` parameter from Target.has_sources()? In V1,
+    # it's used to distinguish between Java vs. Scala files. For now, we should leave it off to
+    # keep things as simple as possible, but we may want to add it in the future.
+    def has_sources(self) -> bool:
+        """Return True if the target has `sources` defined with resolved entries.
+
+        This checks after the sources have been resolved, e.g. after any globs have been expanded
+        and any ignores have been applied.
+        """
+        return hasattr(self, "sources") and bool(self.sources.snapshot.files)
 
 
-class Field(object):
-  """A marker for Target(Adaptor) fields for which the engine might perform extra construction."""
+@union
+class HydrateableField:
+    """A marker for Target(Adaptor) fields for which the engine might perform extra construction."""
 
 
-class SourcesField(datatype(['address', 'arg', 'filespecs', 'path_globs']), Field):
-  """Represents the `sources` argument for a particular Target.
+@dataclass(frozen=True)
+class SourcesField:
+    """Represents the `sources` argument for a particular Target.
 
-  Sources are currently eagerly computed in-engine in order to provide the `BuildGraph`
-  API efficiently; once tasks are explicitly requesting particular Products for Targets,
-  lazy construction will be more natural.
-    see https://github.com/pantsbuild/pants/issues/3560
+    Sources are currently eagerly computed in-engine in order to provide the `BuildGraph`
+    API efficiently; once tasks are explicitly requesting particular Products for Targets,
+    lazy construction will be more natural.
+      see https://github.com/pantsbuild/pants/issues/3560
 
-  :param address: The Address of the TargetAdaptor for which this field is an argument.
-  :param arg: The name of this argument: usually 'sources', but occasionally also 'resources' in the
-    case of python resource globs.
-  :param filespecs: The merged filespecs dict the describes the paths captured by this field.
-  :param path_globs: A PathGlobs describing included files.
-  """
+    :param address: The Address of the TargetAdaptor for which this field is an argument.
+    :param arg: The name of this argument: usually 'sources', but occasionally also 'resources' in the
+      case of python resource globs.
+    :param filespecs: The merged filespecs dict the describes the paths captured by this field.
+    :param path_globs: A PathGlobs describing included files.
+    :param validate_fn: A function which takes an EagerFilesetWithSpec and throws if it's not
+      acceptable. This API will almost certainly change in the near future.
+    """
 
-  def __hash__(self):
-    return hash((self.address, self.arg))
+    address: Address
+    arg: str
+    source_globs: "SourceGlobs"
+    conjunction: GlobExpansionConjunction = GlobExpansionConjunction.any_match
+    validate_fn: Callable = lambda _: None
 
-  def __repr__(self):
-    return str(self)
+    @property
+    def path_globs(self) -> PathGlobs:
+        return self.source_globs.to_path_globs(
+            relpath=self.address.spec_path, conjunction=self.conjunction
+        )
 
-  def __str__(self):
-    return 'SourcesField(address={}, arg={}, filespecs={!r})'.format(self.address, self.arg, self.filespecs)
+    def __hash__(self):
+        return hash((self.address, self.arg))
 
-
-class JavaLibraryAdaptor(TargetAdaptor):
-  @property
-  def default_sources_globs(self):
-    return ('*.java',)
-
-  @property
-  def default_sources_exclude_globs(self):
-    return JunitTestsAdaptor.java_test_globs
-
-
-class ScalaLibraryAdaptor(TargetAdaptor):
-  @property
-  def default_sources_globs(self):
-    return ('*.scala',)
-
-  @property
-  def default_sources_exclude_globs(self):
-    return JunitTestsAdaptor.scala_test_globs
+    def __str__(self):
+        return f"{self.address}({self.arg}={self.source_globs})"
 
 
-class JunitTestsAdaptor(TargetAdaptor):
-  java_test_globs = ('*Test.java',)
-  scala_test_globs = ('*Test.scala', '*Spec.scala')
+class JvmBinaryAdaptor(TargetAdaptor):
+    def validate_sources(self, sources):
+        if len(sources.files) > 1:
+            raise Target.IllegalArgument(
+                self.address.spec,
+                "jvm_binary must have exactly 0 or 1 sources (typically used to specify the class "
+                "containing the main method). "
+                "Other sources should instead be placed in a java_library, which "
+                "should be referenced in the jvm_binary's dependencies.",
+            )
 
-  @property
-  def default_sources_globs(self):
-    return self.java_test_globs + self.scala_test_globs
+
+class PageAdaptor(TargetAdaptor):
+    def validate_sources(self, sources):
+        if len(sources.files) != 1:
+            raise Target.IllegalArgument(
+                self.address.spec,
+                "page targets must have exactly 1 source, but found {} ({})".format(
+                    len(sources.files), ", ".join(sources.files),
+                ),
+            )
 
 
-class BundlesField(datatype(['address', 'bundles', 'filespecs_list', 'path_globs_list']), Field):
-  """Represents the `bundles` argument, each of which has a PathGlobs to represent its `fileset`."""
+@dataclass(frozen=True)
+class BundlesField:
+    """Represents the `bundles` argument, each of which has a PathGlobs to represent its
+    `fileset`."""
 
-  def __eq__(self, other):
-    return type(self) == type(other) and self.address == other.address
+    address: Address
+    bundles: Any
+    filespecs_list: List[wrapped_globs.Filespec]
+    path_globs_list: List[PathGlobs]
 
-  def __ne__(self, other):
-    return not (self == other)
-
-  def __hash__(self):
-    return hash(self.address)
+    def __hash__(self):
+        return hash(self.address)
 
 
 class BundleAdaptor(Struct):
-  """A Struct to capture the args for the `bundle` object.
+    """A Struct to capture the args for the `bundle` object.
 
-  Bundles have filesets which we need to capture in order to execute them in the engine.
+    Bundles have filesets which we need to capture in order to execute them in the engine.
 
-  TODO: Bundles should arguably be Targets, but that distinction blurs in the `exp` examples
-  package, where a Target is just a collection of configuration.
-  """
+    TODO: Bundles should arguably be Targets, but that distinction blurs in the `exp` examples
+    package, where a Target is just a collection of configuration.
+    """
 
 
 class AppAdaptor(TargetAdaptor):
-  def __init__(self, bundles=None, **kwargs):
-    """
-    :param list bundles: A list of `BundleAdaptor` objects
-    """
-    super(AppAdaptor, self).__init__(**kwargs)
-    self.bundles = bundles
+    def __init__(self, bundles=None, **kwargs):
+        """
+        :param list bundles: A list of `BundleAdaptor` objects
+        """
+        super().__init__(**kwargs)
+        self.bundles = bundles
 
-  @addressable_list(Exactly(BundleAdaptor))
-  def bundles(self):
-    """The BundleAdaptors for this JvmApp."""
-    return self.bundles
+    @addressable_sequence(Exactly(BundleAdaptor))
+    def bundles(self):
+        """The BundleAdaptors for this JvmApp."""
+        return self.bundles
 
-  @property
-  def field_adaptors(self):
-    with exception_logging(logger, 'Exception in `field_adaptors` property'):
-      field_adaptors = super(AppAdaptor, self).field_adaptors
-      if getattr(self, 'bundles', None) is None:
-        return field_adaptors
+    @property
+    def field_adaptors(self) -> Tuple:
+        with exception_logging(logger, "Exception in `field_adaptors` property"):
+            field_adaptors = super().field_adaptors
+            if getattr(self, "bundles", None) is None:
+                return field_adaptors
 
-      bundles_field = self._construct_bundles_field()
-      return field_adaptors + (bundles_field,)
+            bundles_field = self._construct_bundles_field()
+            return (*field_adaptors, bundles_field)
 
-  def _construct_bundles_field(self):
-    filespecs_list = []
-    path_globs_list = []
-    for bundle in self.bundles:
-      # NB: if a bundle has a rel_path, then the rel_root of the resulting file globs must be
-      # set to that rel_path.
-      rel_root = getattr(bundle, 'rel_path', self.address.spec_path)
+    def _construct_bundles_field(self) -> BundlesField:
+        filespecs_list: List[wrapped_globs.Filespec] = []
+        path_globs_list: List[PathGlobs] = []
+        for bundle in self.bundles:
+            # NB: if a bundle has a rel_path, then the rel_root of the resulting file globs must be
+            # set to that rel_path.
+            rel_root = getattr(bundle, "rel_path", self.address.spec_path)
 
-      base_globs = BaseGlobs.from_sources_field(bundle.fileset, rel_root)
-      path_globs = base_globs.to_path_globs(rel_root)
+            source_globs = SourceGlobs.from_sources_field(bundle.fileset)
+            path_globs = source_globs.to_path_globs(rel_root, GlobExpansionConjunction.all_match)
 
-      filespecs_list.append(base_globs.filespecs)
-      path_globs_list.append(path_globs)
-    return BundlesField(self.address,
-                        self.bundles,
-                        filespecs_list,
-                        path_globs_list)
+            filespecs_list.append(source_globs.filespecs)
+            path_globs_list.append(path_globs)
+
+        return BundlesField(self.address, self.bundles, filespecs_list, path_globs_list)
+
+
+class JvmAppAdaptor(AppAdaptor):
+    pass
+
+
+class PythonAppAdaptor(AppAdaptor):
+    pass
 
 
 class RemoteSourcesAdaptor(TargetAdaptor):
-  def __init__(self, dest=None, **kwargs):
-    """
-    :param dest: A target constructor.
-    """
-    if not isinstance(dest, string_types):
-      dest = dest._type_alias
-    super(RemoteSourcesAdaptor, self).__init__(dest=dest, **kwargs)
+    def __init__(self, dest=None, **kwargs):
+        """
+        :param dest: A target constructor.
+        """
+        if not isinstance(dest, str):
+            dest = dest._type_alias
+        super().__init__(dest=dest, **kwargs)
 
 
 class PythonTargetAdaptor(TargetAdaptor):
-  @property
-  def field_adaptors(self):
-    with exception_logging(logger, 'Exception in `field_adaptors` property'):
-      field_adaptors = super(PythonTargetAdaptor, self).field_adaptors
-      if getattr(self, 'resources', None) is None:
-        return field_adaptors
-      base_globs = BaseGlobs.from_sources_field(self.resources, self.address.spec_path)
-      path_globs = base_globs.to_path_globs(self.address.spec_path)
-      sources_field = SourcesField(self.address,
-                                   'resources',
-                                   base_globs.filespecs,
-                                   path_globs)
-      return field_adaptors + (sources_field,)
+    @property
+    def field_adaptors(self) -> Tuple:
+        with exception_logging(logger, "Exception in `field_adaptors` property"):
+            field_adaptors = super().field_adaptors
+            if getattr(self, "resources", None) is None:
+                return field_adaptors
+            source_globs = SourceGlobs.from_sources_field(self.resources)
+            sources_field = SourcesField(
+                address=self.address,
+                arg="resources",
+                source_globs=source_globs,
+                conjunction=GlobExpansionConjunction.all_match,
+            )
+            return (*field_adaptors, sources_field)
+
+    # TODO(#4535): remove this once its superseded by the target API.
+    @property
+    def compatibility(self) -> Optional[List[str]]:
+        if "compatibility" not in self._kwargs:
+            return None
+        return ensure_str_list(self._kwargs["compatibility"], allow_single_str=True)
 
 
-class PythonLibraryAdaptor(PythonTargetAdaptor):
-  @property
-  def default_sources_globs(self):
-    return ('*.py',)
-
-  @property
-  def default_sources_exclude_globs(self):
-    return PythonTestsAdaptor.python_test_globs
+class PythonBinaryAdaptor(PythonTargetAdaptor):
+    def validate_sources(self, sources):
+        if len(sources.files) > 1:
+            raise Target.IllegalArgument(
+                self.address.spec,
+                "python_binary must have exactly 0 or 1 sources (typically used to specify the file "
+                "containing the entry point). "
+                "Other sources should instead be placed in a python_library, which "
+                "should be referenced in the python_binary's dependencies.",
+            )
 
 
 class PythonTestsAdaptor(PythonTargetAdaptor):
-  python_test_globs = ('test_*.py', '*_test.py')
-
-  @property
-  def default_sources_globs(self):
-    return self.python_test_globs
+    pass
 
 
-class GoTargetAdaptor(TargetAdaptor):
-
-  @property
-  def default_sources(self):
-    # Go has always used implicit_sources: override to ignore the option.
-    return True
-
-  @property
-  def default_sources_globs(self):
-    # N.B. Go targets glob on `*` due to the way resources and .c companion files are handled.
-    return ('*',)
+class PantsPluginAdaptor(PythonTargetAdaptor):
+    def get_sources(self) -> "GlobsWithConjunction":
+        return GlobsWithConjunction.for_literal_files(["register.py"])
 
 
-class BaseGlobs(Locatable, AbstractClass):
-  """An adaptor class to allow BUILD file parsing from ContextAwareObjectFactories."""
+class SourceGlobs(Locatable):
+    """A light wrapper around a target's `sources`.
 
-  @staticmethod
-  def from_sources_field(sources, spec_path):
-    """Return a BaseGlobs for the given sources field.
-
-    `sources` may be None, a list/tuple/set, a string or a BaseGlobs instance.
+    This allows BUILD file parsing from ContextAwareObjectFactories.
     """
-    if sources is None:
-      return Files(spec_path=spec_path)
-    elif isinstance(sources, BaseGlobs):
-      return sources
-    elif isinstance(sources, string_types):
-      return Files(sources, spec_path=spec_path)
-    elif isinstance(sources, (set, list, tuple)):
-      return Files(*sources, spec_path=spec_path)
-    else:
-      raise AssertionError('Could not construct PathGlobs from {}'.format(sources))
 
-  @staticmethod
-  def _filespec_for_exclude(raw_exclude, spec_path):
-    if isinstance(raw_exclude, string_types):
-      raise ValueError('Excludes of type `{}` are not supported: got "{}"'
-                       .format(type(raw_exclude).__name__, raw_exclude))
+    @staticmethod
+    def from_sources_field(sources: Union[None, str, Iterable[str]]) -> "SourceGlobs":
+        """Return a BaseGlobs for the given sources field."""
+        if sources is None:
+            return SourceGlobs()
+        if isinstance(sources, str):
+            return SourceGlobs(sources)
+        if isinstance(sources, (MutableSet, MutableSequence, tuple)) and all(
+            isinstance(s, str) for s in sources
+        ):
+            return SourceGlobs(*sources)
+        raise ValueError(f"Expected a list of literal source files and globs. Got: {sources}.")
 
-    excluded_patterns = []
-    for raw_element in raw_exclude:
-      exclude_filespecs = BaseGlobs.from_sources_field(raw_element, spec_path).filespecs
-      if exclude_filespecs.get('exclude', []):
-        raise ValueError('Nested excludes are not supported: got {}'.format(raw_element))
-      excluded_patterns.extend(exclude_filespecs.get('globs', []))
-    return {'globs': excluded_patterns}
+    def __init__(self, *patterns: str) -> None:
+        self._patterns = patterns
 
-  @abstractproperty
-  def path_globs_kwarg(self):
-    """The name of the `PathGlobs` parameter corresponding to this BaseGlobs instance."""
+    @property
+    def filespecs(self) -> wrapped_globs.Filespec:
+        """Return a filespecs dict representing both globs and excludes."""
+        includes = []
+        excludes = []
+        for glob in self._patterns:
+            if glob.startswith("!"):
+                excludes.append(glob[1:])
+            else:
+                includes.append(glob)
+        filespecs: wrapped_globs.Filespec = {"globs": includes}
+        if excludes:
+            filespecs["exclude"] = [{"globs": excludes}]
+        return filespecs
 
-  @abstractproperty
-  def legacy_globs_class(self):
-    """The corresponding `wrapped_globs` class for this BaseGlobs."""
+    def to_path_globs(self, relpath: str, conjunction: GlobExpansionConjunction) -> PathGlobs:
+        """Return a PathGlobs representing the included and excluded Files for these patterns."""
 
-  def __init__(self, *patterns, **kwargs):
-    raw_spec_path = kwargs.pop('spec_path')
-    self._file_globs = self.legacy_globs_class.to_filespec(patterns).get('globs', [])
-    raw_exclude = kwargs.pop('exclude', [])
-    self._excluded_file_globs = self._filespec_for_exclude(raw_exclude, raw_spec_path).get('globs', [])
-    self._spec_path = raw_spec_path
+        def join_with_relpath(glob: str) -> str:
+            if glob.startswith("!"):
+                return f"!{os.path.join(relpath, glob[1:])}"
+            return os.path.join(relpath, glob)
 
-    # `follow_links=True` is the default behavior for wrapped globs, so we pop the old kwarg
-    # and warn here to bridge the gap from v1->v2 BUILD files.
-    follow_links = kwargs.pop('follow_links', None)
-    if follow_links is not None:
-      logger.warn(
-        'Ignoring `follow_links={}` kwarg on glob. Default behavior is to follow all links.'
-        .format(follow_links)
-      )
+        return PathGlobs(
+            globs=(join_with_relpath(glob) for glob in self._patterns), conjunction=conjunction,
+        )
 
-    if kwargs:
-      raise ValueError('kwargs not supported for {}. Got: {}'.format(type(self), kwargs))
-
-  @property
-  def filespecs(self):
-    """Return a filespecs dict representing both globs and excludes."""
-    return {'globs': self._file_globs, 'exclude': self._exclude_filespecs}
-
-  @property
-  def _exclude_filespecs(self):
-    if self._excluded_file_globs:
-      return [{'globs': self._excluded_file_globs}]
-    else:
-      return []
-
-  def to_path_globs(self, relpath):
-    """Return two PathGlobs representing the included and excluded Files for these patterns."""
-    return PathGlobs.create(relpath, self._file_globs, self._excluded_file_globs)
+    def __repr__(self) -> str:
+        return f"[{', '.join(repr(p) for p in self._patterns)}]"
 
 
-class Files(BaseGlobs):
-  path_globs_kwarg = 'files'
-  legacy_globs_class = wrapped_globs.Globs
+@dataclass(frozen=True)
+class GlobsWithConjunction:
+    globs: SourceGlobs
+    conjunction: GlobExpansionConjunction
+
+    @classmethod
+    def for_literal_files(cls, file_paths: Sequence[str]) -> "GlobsWithConjunction":
+        return cls(SourceGlobs(*file_paths), GlobExpansionConjunction.all_match)
 
 
-class Globs(BaseGlobs):
-  path_globs_kwarg = 'globs'
-  legacy_globs_class = wrapped_globs.Globs
-
-
-class RGlobs(BaseGlobs):
-  path_globs_kwarg = 'rglobs'
-  legacy_globs_class = wrapped_globs.RGlobs
-
-
-class ZGlobs(BaseGlobs):
-  path_globs_kwarg = 'zglobs'
-  legacy_globs_class = wrapped_globs.ZGlobs
+def rules():
+    return [
+        UnionRule(HydrateableField, SourcesField),
+        UnionRule(HydrateableField, BundlesField),
+    ]

@@ -22,7 +22,8 @@ jar_library(name='args4j',
 jar_library(name='guava',
             jars=[
               jar('com.google.guava', 'guava', '18.0',
-                  apidocs='http://google.github.io/guava/releases/18.0/api/docs/')
+                  apidocs='http://google.github.io/guava/releases/18.0/api/docs/',
+                  force=True)
             ])
 
 jar_library(name='jansi',
@@ -36,19 +37,19 @@ jar_library(name='javax-activation',
             ])
 
 jar_library(name='jaxb-api',
-            jars=[
-              jar('javax.xml.bind', 'jaxb-api', '2.3.0'),
-            ])
+           jars=[
+             jar('javax.xml.bind', 'jaxb-api', '2.3.0'),
+           ])
 
 jar_library(name='jaxb-core',
-            jars=[
-              jar('com.sun.xml.bind', 'jaxb-core', '2.3.0'),
-            ])
+           jars=[
+             jar('com.sun.xml.bind', 'jaxb-core', '2.3.0'),
+           ])
 
 jar_library(name='jaxb-impl',
-            jars=[
-              jar('com.sun.xml.bind', 'jaxb-impl', '2.3.0'),
-            ])
+           jars=[
+             jar('com.sun.xml.bind', 'jaxb-impl', '2.3.0'),
+           ])
 
 jar_library(name='jsr305',
             jars=[
@@ -75,7 +76,7 @@ jar_library(name='commons-lang',
 
 jar_library(name='cucumber-java',
             jars=[
-              jar(org='info.cukes', name='cucumber-java', rev='1.1.7'),
+              jar(org='info.cukes', name='cucumber-java', rev='1.2.5'),
             ])
 
 jar_library(name='ivy',
@@ -108,15 +109,9 @@ jar_library(name='protobuf-test-import',
               jar(org='com.squareup.testing.protolib', name='protolib-test', rev='1.0.1'),
             ])
 
-jar_library(name='scrooge-core',
-            jars = [
-              # used by scrooge-generator in BUILD.tools:scrooge-gen
-              scala_jar(org='com.twitter', name='scrooge-core', rev='3.20.0'),
-            ])
-
 jar_library(name='shapeless',
             jars=[
-              scala_jar(org='com.chuusai', name='shapeless', rev='2.2.5'),
+              scala_jar(org='com.chuusai', name='shapeless', rev='2.3.2'),
             ])
 
 jar_library(name='slf4j-api',
@@ -124,28 +119,12 @@ jar_library(name='slf4j-api',
               jar(org='org.slf4j', name='slf4j-api', rev='1.6.1'),
             ])
 
-# NB: we have two versions of thrift here due to scrooge requiring one version while apache
-# thrift requires another. This is not usually recommended.
-jar_library(name='libthrift-0.9.2',
+jar_library(name='thrift',
             jars = [
-              jar(org='org.apache.thrift', name='libthrift', rev='0.9.2')
+              jar(org='org.apache.thrift', name='libthrift', rev='0.10.0')
             ],
             # javac uses undeclared types to build the MessageBuilder API.
             scope='forced',)
-
-target(name='thrift-0.9.2', dependencies = [':libthrift-0.9.2'])
-
-jar_library(name='libthrift-0.6.1',
-            jars = [
-              jar(org='org.apache.thrift', name='libthrift', rev='0.6.1')
-            ])
-
-target(name='thrift-0.6.1',
-       dependencies = [
-         ':commons-lang',
-         ':libthrift-0.6.1',
-         ':slf4j-api',
-       ])
 
 
 ###############
@@ -176,12 +155,5 @@ jar_library(name='junit',
 
 jar_library(name='scalatest',
             jars=[
-              scala_jar('org.scalatest', 'scalatest', '3.0.0')
+              scala_jar('org.scalatest', 'scalatest', '3.0.8')
             ])
-
-jar_library(name='wire-runtime',
-            jars=[
-              jar(org='com.squareup.wire', name='wire-runtime', rev='1.8.0'),
-            ],
-            # javac uses undeclared types to build the MessageBuilder API.
-            scope='forced',)

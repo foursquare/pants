@@ -3,13 +3,19 @@
 
 python_library(
   dependencies=[
-    'src/python/pants/backend/native/subsystems/platform_specific/darwin',
-    'src/python/pants/backend/native/subsystems/platform_specific/linux',
-    'src/python/pants/binaries',
+    '3rdparty/python:dataclasses',
+    'src/python/pants/backend/native/config',
+    'src/python/pants/backend/native/subsystems/binaries',
+    'src/python/pants/backend/native/subsystems/utils',
+    'src/python/pants/build_graph',
+    'src/python/pants/engine:rules',
+    'src/python/pants/engine:platform',
+    'src/python/pants/engine:selectors',
     'src/python/pants/subsystem',
-    'src/python/pants/util:contextutil',
+    'src/python/pants/util:collections',
+    'src/python/pants/util:enums',
     'src/python/pants/util:memo',
-    'src/python/pants/util:osutil',
-    'src/python/pants/util:process_handler',
+    'src/python/pants/util:meta',
   ],
+  tags = {"partially_type_checked"},
 )

@@ -1,12 +1,10 @@
-use bytes;
-use std;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 pub fn list_dir(path: &Path) -> Vec<String> {
   let mut v: Vec<_> = std::fs::read_dir(path)
-    .expect(&format!("Listing dir {:?}", path))
+    .unwrap_or_else(|err| panic!("Listing dir {:?}: {:?}", path, err))
     .map(|entry| {
       entry
         .expect("Error reading entry")
@@ -29,7 +27,6 @@ pub fn contents(path: &Path) -> bytes::Bytes {
 
 pub fn is_executable(path: &Path) -> bool {
   std::fs::metadata(path)
-    .expect("Getting file metadata")
-    .permissions()
-    .mode() & 0o100 == 0o100
+    .map(|meta| meta.permissions().mode() & 0o100 == 0o100)
+    .unwrap_or(false)
 }

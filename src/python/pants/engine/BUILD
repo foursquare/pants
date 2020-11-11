@@ -3,188 +3,213 @@
 
 page(
   name='readme',
-  source='README.md',
+  sources=['README.md'],
 )
 
-# TODO: Get rid of all these microtargets. The entire package should be one target,
-# or be split into multiple packages.
-
-python_library(
-  name = 'legacy_engine',
-  sources = ['legacy_engine.py', 'round_engine.py', 'round_manager.py'],
+python_tests(
+  name = 'tests',
   dependencies = [
-    '3rdparty/python/twitter/commons:twitter.common.collections',
-    'src/python/pants/base:exceptions',
-    'src/python/pants/base:workunit',
-    'src/python/pants/goal',
-    'src/python/pants/util:meta',
+    ':addresses',
+    ':collection',
+    ':console',
+    ':fs',
+    ':goal',
+    ':platform',
+    ':process',
+    ':rules',
+    ':selectors',
+    ':target',
+    'src/python/pants/base:project_tree',
+    'src/python/pants/engine/internals/examples:fs_test',
+    'src/python/pants/engine/internals/examples:parsers',
+    'src/python/pants/engine/internals:build_files',
+    'src/python/pants/engine/internals:core_abstractions',
+    'src/python/pants/engine/internals:scheduler',
+    'src/python/pants/engine/internals:scheduler_test_base',
+    'src/python/pants/option',
+    'src/python/pants/testutil:test_base',
+    'src/python/pants/testutil/engine:util',
+    'src/python/pants/util:collections',
+    'src/python/pants/util:contextutil',
+    'src/python/pants/util:dirutil',
+    'src/python/pants/util:enums',
   ],
 )
 
 python_library(
-  name='addressable',
-  sources=['addressable.py'],
+  name='addresses',
+  sources=['addresses.py'],
   dependencies=[
-    '3rdparty/python:six',
-    ':objects',
-    'src/python/pants/build_graph',
-    'src/python/pants/util:memo',
-    'src/python/pants/util:objects',
-  ]
+    ':collection',
+    'src/python/pants/base:exceptions',
+    'src/python/pants/base:specs',
+    'src/python/pants/build_graph:address',
+  ],
+  tags = {"type_checked"},
 )
 
 python_library(
-  name='struct',
-  sources=['struct.py'],
+  name='collection',
+  sources=['collection.py'],
   dependencies=[
-    ':objects',
-    'src/python/pants/util:objects',
-  ]
+    'src/python/pants/util:ordered_set',
+  ],
+  tags = {'type_checked'},
+)
+
+python_library(
+  name='console',
+  sources=['console.py'],
+  dependencies=[
+    '3rdparty/python:ansicolors',
+    ':rules',
+    'src/python/pants/engine/internals:native',
+    'src/python/pants/engine/internals:scheduler',
+  ],
+  tags = {'partially_type_checked'},
+)
+
+python_library(
+  name='desktop',
+  sources=['desktop.py'],
+  dependencies=[
+    '3rdparty/python:dataclasses',
+    ':console',
+    ':interactive_process',
+    'src/python/pants/util:osutil',
+    'src/python/pants/util:strutil',
+  ],
+  tags = {"type_checked"},
 )
 
 python_library(
   name='fs',
   sources=['fs.py'],
   dependencies=[
-    '3rdparty/python/twitter/commons:twitter.common.collections',
+    '3rdparty/python:dataclasses',
+    ':collection',
     ':rules',
-    ':selectors',
-    'src/python/pants/base:project_tree',
-    'src/python/pants/source',
-    'src/python/pants/util:meta',
-    'src/python/pants/util:objects',
-  ]
-)
-
-python_library(
-  name='build_files',
-  sources=['build_files.py'],
-  dependencies=[
-    '3rdparty/python:six',
-    ':addressable',
-    ':fs',
-    ':mapper',
-    ':objects',
-    ':selectors',
-    ':struct',
-    'src/python/pants/base:project_tree',
-    'src/python/pants/build_graph',
+    # 'src/python/pants/engine/internals:scheduler',  # dep cycle
+    'src/python/pants/option',
+    'src/python/pants/option:global_options',
     'src/python/pants/util:dirutil',
-    'src/python/pants/util:objects',
-  ]
+    'src/python/pants/util:meta',
+  ],
+  tags = {'type_checked'},
 )
 
 python_library(
-  name='mapper',
-  sources=['mapper.py'],
+  name='goal',
+  sources=['goal.py'],
   dependencies=[
-    ':objects',
-    ':parser',
-    'src/python/pants/build_graph',
-    'src/python/pants/util:memo',
-  ]
+    '3rdparty/python:dataclasses',
+    'src/python/pants/cache',
+    'src/python/pants/option',
+    'src/python/pants/option:options_bootstrapper',
+    'src/python/pants/subsystem',
+    'src/python/pants/util:meta',
+  ],
+  tags = {'partially_type_checked'},
 )
 
 python_library(
-  name='isolated_process',
-  sources=['isolated_process.py'],
+  name='interactive_process',
+  sources=['interactive_process.py'],
   dependencies=[
+    '3rdparty/python:dataclasses',
     ':fs',
     ':rules',
-    ':selectors',
-    'src/python/pants/util:objects',
-  ]
+    'src/python/pants/base:exception_sink',
+    # 'src/python/pants/engine/internals:scheduler',  # dep cycle
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
-  name='nodes',
-  sources=['nodes.py'],
+  name='platform',
+  sources=['platform.py'],
   dependencies=[
-    '3rdparty/python/twitter/commons:twitter.common.collections',
-    ':addressable',
-    ':fs',
-    ':struct',
-    'src/python/pants/base:project_tree',
-    'src/python/pants/build_graph',
-    'src/python/pants/util:objects',
-  ]
-)
-
-python_library(
-  name='objects',
-  sources=['objects.py'],
-  dependencies=[
-    'src/python/pants/util:meta',
-  ]
-)
-
-python_library(
-  name='parser',
-  sources=['parser.py'],
-  dependencies=[
-    '3rdparty/python:six',
-    ':addressable',
-    ':objects',
-    'src/python/pants/build_graph',
+    ':rules',
     'src/python/pants/util:memo',
-  ]
+    'src/python/pants/util:osutil',
+  ],
+  tags = {"type_checked"},
+)
+
+python_library(
+  name='process',
+  sources=['process.py'],
+  dependencies=[
+    '3rdparty/python:dataclasses',
+    ':fs',
+    ':platform',
+    ':rules',
+    'src/python/pants/util:meta',
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
   name='rules',
   sources=['rules.py'],
   dependencies=[
-    '3rdparty/python/twitter/commons:twitter.common.collections',
+    ':goal',
     ':selectors',
-    'src/python/pants/base:specs',
-    'src/python/pants/build_graph',
-    'src/python/pants/util:objects',
-  ]
+    ':unions',
+    'src/python/pants/base:deprecated',
+    'src/python/pants/option',
+    'src/python/pants/util:collections',
+    'src/python/pants/util:logging',
+    'src/python/pants/util:memo',
+    'src/python/pants/util:meta',
+    'src/python/pants/util:ordered_set',
+  ],
+  tags = {'partially_type_checked'},
 )
 
 python_library(
   name='selectors',
   sources=['selectors.py'],
   dependencies=[
-    '3rdparty/python:six',
+    '3rdparty/python:dataclasses',
+    'src/python/pants/base:deprecated',
     'src/python/pants/util:meta',
-    'src/python/pants/util:objects',
-  ]
-)
-
-python_library(
-  name='scheduler',
-  sources=['scheduler.py'],
-  dependencies=[
-    '3rdparty/python/twitter/commons:twitter.common.collections',
-    ':fs',
-    ':isolated_process',
-    ':native',
-    ':nodes',
-    ':rules',
-    'src/python/pants/base:exceptions',
-    'src/python/pants/base:specs',
-    'src/python/pants/build_graph',
-    'src/python/pants/util:objects',
-  ]
-)
-
-python_library(
-  name='native',
-  sources=['native.py'],
-  dependencies=[
-    ':native_engine_shared_library',
-    ':selectors',
-    '3rdparty/python:cffi',
-    '3rdparty/python:setuptools',
-    'src/python/pants/binaries',
-    'src/python/pants/util:dirutil',
-    'src/python/pants/util:memo',
-    'src/python/pants/util:objects'
   ],
+  tags = {'partially_type_checked'},
 )
 
-resources(
-  name='native_engine_shared_library',
-  sources=['native_engine.so']
+python_library(
+  name='target',
+  sources=['target.py'],
+  dependencies=[
+    ':addresses',
+    ':collection',
+    ':fs',
+    ':rules',
+    ':selectors',
+    ':unions',
+    '3rdparty/python:typing-extensions',
+    'src/python/pants/base:specs',
+    'src/python/pants/build_graph:bundle',
+    'src/python/pants/option:global_options',
+    'src/python/pants/source',
+    'src/python/pants/util:collections',
+    'src/python/pants/util:frozendict',
+    'src/python/pants/util:memo',
+    'src/python/pants/util:meta',
+    'src/python/pants/util:ordered_set',
+    'src/python/pants/util:strutil',
+  ],
+  tags = {'type_checked'},
+)
+
+python_library(
+  name='unions',
+  sources=['unions.py'],
+  dependencies=[
+    'src/python/pants/util:frozendict',
+    'src/python/pants/util:ordered_set',
+    'src/python/pants/util:meta',
+  ],
+  tags = {'type_checked'},
 )

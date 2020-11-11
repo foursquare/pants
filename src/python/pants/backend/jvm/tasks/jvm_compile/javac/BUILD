@@ -3,15 +3,10 @@
 
 python_library(
   dependencies = [
-    '3rdparty/python/twitter/commons:twitter.common.collections',
-    '3rdparty/python:six',
     'src/python/pants/backend/jvm/subsystems:java',
     'src/python/pants/backend/jvm/subsystems:jvm_platform',
     'src/python/pants/backend/jvm/subsystems:shader',
     'src/python/pants/backend/jvm/targets:java',
-    'src/python/pants/backend/jvm/tasks/jvm_compile:analysis',
-    'src/python/pants/backend/jvm/tasks/jvm_compile:analysis_parser',
-    'src/python/pants/backend/jvm/tasks/jvm_compile:analysis_tools',
     'src/python/pants/backend/jvm/tasks/jvm_compile:jvm_compile',
     'src/python/pants/base:exceptions',
     'src/python/pants/base:hash_utils',
@@ -22,4 +17,5 @@ python_library(
     'src/python/pants/util:dirutil',
     'src/python/pants/util:memo',
   ],
+  tags = {"partially_type_checked"},
 )

@@ -5,10 +5,12 @@ python_library(
   name = 'changed',
   sources = ['changed.py'],
   dependencies = [
+    '3rdparty/python:dataclasses',
     'src/python/pants/base:build_environment',
     'src/python/pants/base:exceptions',
+    'src/python/pants/engine:addresses',
     'src/python/pants/goal:workspace',
-    'src/python/pants/scm:change_calculator',
     'src/python/pants/subsystem',
-  ]
+  ],
+  tags = {"partially_type_checked"},
 )

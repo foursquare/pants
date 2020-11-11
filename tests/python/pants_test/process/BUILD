@@ -3,8 +3,9 @@
 
 python_tests(
   dependencies = [
-    '3rdparty/python:mock',
-    '3rdparty/python:six',
     'src/python/pants/process',
-  ]
+    'src/python/pants/testutil:test_base',
+    'src/python/pants/testutil/subsystem',
+  ],
+  tags = {"partially_type_checked"},
 )

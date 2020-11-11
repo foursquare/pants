@@ -27,6 +27,7 @@ Here, the <a pantsref="bdict_jar_library">`jar_library`</a>'s name
 defines a target address that other build targets can refer to. The
 <a pantsref="bdict_jar">`jar`</a>s refer to jars that Ivy can resolve and fetch.
 
+When [[using Scala with pants|pants('examples/src/scala/org/pantsbuild/example:readme')]], the <a pantsref="bdict_scala_jar">`scala_jar`</a> symbol will add the appropriate Scala version suffix (e.g. `_2.12`) to the `name` field automatically.
 
 Your Code's BUILD File
 ----------------------
@@ -61,12 +62,14 @@ that matches the one used to publish the artifact, pants will always prefer the
 local target definition to the published jar if it is in the context:
 
     :::python
-    java_library(name='api',
-      sources = globs('*.java'),
-      provides = artifact(org='org.archie', name='api', repo=myrepo),
+    java_library(
+      name='api',
+      sources=['*.java'],
+      provides=artifact(org='org.archie', name='api', repo=myrepo),
     )
 
-    jar_library(name='bin-dep',
+    jar_library(
+      name='bin-dep',
       jars=[
         jar(org='org.archie', name='consumer', rev='1.2.3'),
       ],
@@ -101,11 +104,12 @@ Rather than mark the `jar` intransitive, you can `exclude` some
 transitive dependencies from JVM targets:
 
     :::python
-    java_library(name = 'loadtest',
+    java_library(
+      name = 'loadtest',
       dependencies = [
         '3rdparty/storm:storm',
       ],
-      sources = globs('*.java'),
+      sources = ['*.java'],
       excludes = [
         exclude('org.sonatype.sisu.inject', 'cglib')
       ]
@@ -154,7 +158,7 @@ This is a problem, because it may be that `common-4.5.6` is not compatible
 with `3rdparty:example`, which will _break the `foo` binary at runtime_.
 
 More subtly, if you have many intermediate `java_library` targets between
-your `jvm_binaries` and your `jar_library` targets (which is normaly the
+your `jvm_binaries` and your `jar_library` targets (which is normally the
 case), simply changing which combination of `java_library` targets are in
 the same `./pants` invocation may invalidate the cache and force Pants to
 recompile them, even if their sources are unchanged. This is because they
@@ -172,7 +176,7 @@ There are a few ways to avoid or work around these problems. A simple method
 is to use the [strict ivy conflict manager](http://ant.apache.org/ivy/history/2.4.0/settings/conflict-managers.html),
 which will cause the jar resolution to fail with an error if it detects two
 artifacts with conflicting versions. This has the advantage of forcing a dev
-to be aware of (and make a decision about) confliction versions.
+to be aware of (and make a decision about) conflicting versions.
 
 You could also disable transitive jar resolution altogether, and explicitly
 declare every dependency you need. This ensures that you have total control
@@ -209,11 +213,11 @@ You can set up your `3rdparty/BUILD` file like so:
       ],
     )
 
-And in `pants.ini`, add:
+And in `pants.toml`, add:
 
     :::ini
     [jar-dependency-management]
-    default_target: 3rdparty:management
+    default_target = "3rdparty:management"
 
 This will force all `jar_library` targets in your repository to use the
 versions of `commons-io` and `jersey-core` referenced by the `management`

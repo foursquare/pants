@@ -1,9 +1,5 @@
-# coding=utf-8
 # Copyright 2014 Pants project contributors (see CONTRIBUTORS.md).
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
-
-from __future__ import (absolute_import, division, generators, nested_scopes, print_function,
-                        unicode_literals, with_statement)
 
 from pants.backend.codegen.thrift.java.java_thrift_library import JavaThriftLibrary
 from pants.backend.codegen.thrift.java.thrift_defaults import ThriftDefaults
@@ -18,40 +14,47 @@ from pants.base.exceptions import TargetDefinitionException
 # JarDependency via register_jvm_tool(), as then users happy with the default wouldn't have
 # to have a BUILD file entry for the default spec to point to.
 class ApacheThriftJavaGen(ApacheThriftGenBase):
-  """Generate Java source files from thrift IDL files."""
+    """Generate Java source files from thrift IDL files."""
 
-  gentarget_type = JavaThriftLibrary
-  thrift_generator = 'java'
+    gentarget_type = JavaThriftLibrary
+    thrift_generator = "java"
 
-  _COMPILER = 'thrift'
+    _COMPILER = "thrift"
 
-  @classmethod
-  def subsystem_dependencies(cls):
-    return super(ApacheThriftJavaGen, cls).subsystem_dependencies() + (ThriftDefaults,)
+    sources_globs = ("**/*",)
 
-  @classmethod
-  def implementation_version(cls):
-    return super(ApacheThriftJavaGen, cls).implementation_version() + [('ApacheThriftJavaGen', 2)]
+    @classmethod
+    def subsystem_dependencies(cls):
+        return super().subsystem_dependencies() + (ThriftDefaults,)
 
-  def __init__(self, *args, **kwargs):
-    super(ApacheThriftJavaGen, self).__init__(*args, **kwargs)
-    self._thrift_defaults = ThriftDefaults.global_instance()
+    @classmethod
+    def implementation_version(cls):
+        return super().implementation_version() + [("ApacheThriftJavaGen", 2)]
 
-  def synthetic_target_type(self, target):
-    return JavaLibrary
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._thrift_defaults = ThriftDefaults.global_instance()
 
-  def is_gentarget(self, target):
-    return (super(ApacheThriftJavaGen, self).is_gentarget(target) and
-            self._thrift_defaults.compiler(target) == self._COMPILER)
+    def synthetic_target_type(self, target):
+        return JavaLibrary
 
-  def _validate(self, target):
-    # TODO: Fix ThriftDefaults to only pertain to scrooge (see TODO there) and then
-    # get rid of this spurious validation.
-    if self._thrift_defaults.language(target) != self.thrift_generator:
-      raise TargetDefinitionException(
-          target,
-          'Compiler {} supports only language={}.'.format(self._COMPILER, self.thrift_generator))
+    def is_gentarget(self, target):
+        return (
+            super().is_gentarget(target)
+            and self._thrift_defaults.compiler(target) == self._COMPILER
+        )
 
-  def execute_codegen(self, target, target_workdir):
-    self._validate(target)
-    super(ApacheThriftJavaGen, self).execute_codegen(target, target_workdir)
+    def _validate(self, target):
+        # TODO: Fix ThriftDefaults to only pertain to scrooge (see TODO there) and then
+        # get rid of this spurious validation.
+        if self._thrift_defaults.language(target) != self.thrift_generator:
+            raise TargetDefinitionException(
+                target,
+                "Compiler {} supports only language={}.".format(
+                    self._COMPILER, self.thrift_generator
+                ),
+            )
+
+    def execute_codegen(self, target, target_workdir):
+        self._validate(target)
+        super().execute_codegen(target, target_workdir)

@@ -1,0 +1,19 @@
+[package]
+name = "ui"
+version = "0.0.1"
+edition = "2018"
+authors = [ "Pants Build <pantsbuild@gmail.com>" ]
+
+[lib]
+path = "src/console_ui.rs"
+
+[dependencies]
+indicatif = "0.14.0"
+futures01 = { package = "futures", version = "0.1" }
+futures = { version = "0.3", features = ["compat"] }
+indexmap = "1.0.2"
+uuid = { version = "0.7", features = ["v4"] }
+logging = { path = "../logging" }
+task_executor = { path = "../task_executor" }
+workunit_store = { path = "../workunit_store" }
+num_cpus = "1"

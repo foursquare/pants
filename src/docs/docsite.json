@@ -5,9 +5,12 @@
     "3rdparty_jvm": "dist/markdown/html/examples/src/java/org/pantsbuild/example/3rdparty_jvm.html",
     "3rdparty_py": "dist/markdown/html/examples/src/python/example/3rdparty_py.html",
     "announce_201409": "dist/markdown/html/src/docs/announce_201409.html",
+    "coursier_migration": "dist/markdown/html/src/docs/blog/coursier_migration.html",
     "build_dictionary": "dist/reference/build_dictionary_body.html",
     "build_files": "dist/markdown/html/src/docs/build_files.html",
     "alias": "dist/markdown/html/src/docs/common_tasks/alias.html",
+    "architecture": "dist/markdown/html/src/docs/architecture.html",
+    "architecture_pantsd": "dist/markdown/html/src/docs/architecture_pantsd.html",
     "bundle": "dist/markdown/html/src/docs/common_tasks/bundle.html",
     "changelog": "dist/markdown/html/src/python/pants/CHANGELOG.html",
     "clean": "dist/markdown/html/src/docs/common_tasks/clean.html",
@@ -47,9 +50,10 @@
     "jvm_tests": "dist/markdown/html/src/docs/common_tasks/jvm_tests.html",
     "list_goals": "dist/markdown/html/src/docs/common_tasks/list_goals.html",
     "list_targets": "dist/markdown/html/src/docs/common_tasks/list_targets.html",
+    "login": "dist/markdown/html/src/docs/common_tasks/login.html",
+    "multiple_jvm_versions": "dist/markdown/html/src/docs/common_tasks/multiple_jvm_versions.html",
+    "node_readme": "dist/markdown/html/contrib/node/README.html",
     "notes-1.0.x": "dist/markdown/html/src/python/pants/notes/1.0.x.html",
-    "notes-1.0.x": "dist/markdown/html/src/python/pants/notes/1.0.x.html",
-    "notes-1.1.x": "dist/markdown/html/src/python/pants/notes/1.1.x.html",
     "notes-1.1.x": "dist/markdown/html/src/python/pants/notes/1.1.x.html",
     "notes-1.2.x": "dist/markdown/html/src/python/pants/notes/1.2.x.html",
     "notes-1.3.x": "dist/markdown/html/src/python/pants/notes/1.3.x.html",
@@ -57,8 +61,31 @@
     "notes-1.5.x": "dist/markdown/html/src/python/pants/notes/1.5.x.html",
     "notes-1.6.x": "dist/markdown/html/src/python/pants/notes/1.6.x.html",
     "notes-1.7.x": "dist/markdown/html/src/python/pants/notes/1.7.x.html",
+    "notes-1.8.x": "dist/markdown/html/src/python/pants/notes/1.8.x.html",
+    "notes-1.9.x": "dist/markdown/html/src/python/pants/notes/1.9.x.html",
+    "notes-1.10.x": "dist/markdown/html/src/python/pants/notes/1.10.x.html",
+    "notes-1.11.x": "dist/markdown/html/src/python/pants/notes/1.11.x.html",
+    "notes-1.12.x": "dist/markdown/html/src/python/pants/notes/1.12.x.html",
+    "notes-1.13.x": "dist/markdown/html/src/python/pants/notes/1.13.x.html",
+    "notes-1.14.x": "dist/markdown/html/src/python/pants/notes/1.14.x.html",
+    "notes-1.15.x": "dist/markdown/html/src/python/pants/notes/1.15.x.html",
+    "notes-1.16.x": "dist/markdown/html/src/python/pants/notes/1.16.x.html",
+    "notes-1.17.x": "dist/markdown/html/src/python/pants/notes/1.17.x.html",
+    "notes-1.18.x": "dist/markdown/html/src/python/pants/notes/1.18.x.html",
+    "notes-1.19.x": "dist/markdown/html/src/python/pants/notes/1.19.x.html",
+    "notes-1.20.x": "dist/markdown/html/src/python/pants/notes/1.20.x.html",
+    "notes-1.21.x": "dist/markdown/html/src/python/pants/notes/1.21.x.html",
+    "notes-1.22.x": "dist/markdown/html/src/python/pants/notes/1.22.x.html",
+    "notes-1.23.x": "dist/markdown/html/src/python/pants/notes/1.23.x.html",
+    "notes-1.24.x": "dist/markdown/html/src/python/pants/notes/1.24.x.html",
+    "notes-1.25.x": "dist/markdown/html/src/python/pants/notes/1.25.x.html",
+    "notes-1.26.x": "dist/markdown/html/src/python/pants/notes/1.26.x.html",
+    "notes-1.27.x": "dist/markdown/html/src/python/pants/notes/1.27.x.html",
+    "notes-1.28.x": "dist/markdown/html/src/python/pants/notes/1.28.x.html",
+    "notes-1.29.x": "dist/markdown/html/src/python/pants/notes/1.29.x.html",
+    "notes-1.30.x": "dist/markdown/html/src/python/pants/notes/1.30.x.html",
     "notes-master": "dist/markdown/html/src/python/pants/notes/master.html",
-    "notes-master": "dist/markdown/html/src/python/pants/notes/master.html",
+    "orgs": "dist/markdown/html/src/docs/orgs.html",
     "options": "dist/markdown/html/src/docs/options.html",
     "options_reference": "dist/reference/pants_reference_body.html",
     "page": "dist/markdown/html/examples/src/java/org/pantsbuild/example/page.html",
@@ -81,10 +108,12 @@
     "setup_repo": "dist/markdown/html/src/docs/setup_repo.html",
     "styleguide": "dist/markdown/html/src/docs/styleguide.html",
     "target_addresses": "dist/markdown/html/src/docs/target_addresses.html",
+    "target_aggregate": "dist/markdown/html/src/docs/common_tasks/target_aggregate.html",
     "test": "dist/markdown/html/src/docs/common_tasks/test.html",
     "test_suite": "dist/markdown/html/src/docs/common_tasks/test_suite.html",
     "thrift_deps": "dist/markdown/html/examples/src/thrift/org/pantsbuild/example/README.html",
     "thrift_gen": "dist/markdown/html/src/docs/common_tasks/thrift_gen.html",
+    "grpcio_gen": "dist/markdown/html/src/docs/common_tasks/python_proto_gen.html",
     "tshoot": "dist/markdown/html/src/docs/tshoot.html",
     "why_use_pants": "dist/markdown/html/src/docs/why_use_pants.html"
   },
@@ -100,6 +129,9 @@
     "images/intellij-project-structure-project.png": "src/docs/images/intellij-project-structure-project.png",
     "images/intellij-run.png": "src/docs/images/intellij-run.png",
     "images/intellij-select-venv.png": "src/docs/images/intellij-select-venv.png",
+    "images/orgs.png": "src/docs/images/orgs.png",
+    "images/orgs_be.png": "src/docs/images/orgs_be.png",
+    "images/orgs_fe.png": "src/docs/images/orgs_fe.png",
     "images/ossrh-publish-close-staging-repo.png": "src/docs/images/ossrh-publish-close-staging-repo.png",
     "images/ossrh-publish-find-staging-repo.png": "src/docs/images/ossrh-publish-find-staging-repo.png",
     "images/ossrh-publish-release-staging-repo.png": "src/docs/images/ossrh-publish-release-staging-repo.png",
@@ -116,15 +148,15 @@
   "tree": [
     { "page": "index",
       "children": [
-
        {"heading": "Getting Started"},
        {"pages": [
-                     "install", 
+                     "install",
                      "setup_repo",
                      "first_tutorial",
-                     "common_tasks"
+                     "common_tasks",
+                     "orgs"
                 ]
-            
+
        },
        {"heading": "Pants Basics"},
        {"pages" : [
@@ -155,9 +187,11 @@
                 ]
        },
        {"pages" : ["go_readme"]},
+       {"pages" : ["node_readme"]},
        {"heading": "Code & Doc Generation"},
        {"pages" : [
                     "thrift_deps",
+                    "grpcio_gen",
                     "page"
                 ]
        },
@@ -175,6 +209,29 @@
        },
        {"collapsible_heading": "Release Notes",
         "pages" : [
+                    "notes-1.30.x",
+                    "notes-1.29.x",
+                    "notes-1.28.x",
+                    "notes-1.27.x",
+                    "notes-1.26.x",
+                    "notes-1.25.x",
+                    "notes-1.24.x",
+                    "notes-1.23.x",
+                    "notes-1.22.x",
+                    "notes-1.21.x",
+                    "notes-1.20.x",
+                    "notes-1.19.x",
+                    "notes-1.18.x",
+                    "notes-1.17.x",
+                    "notes-1.16.x",
+                    "notes-1.15.x",
+                    "notes-1.14.x",
+                    "notes-1.13.x",
+                    "notes-1.12.x",
+                    "notes-1.11.x",
+                    "notes-1.10.x",
+                    "notes-1.9.x",
+                    "notes-1.8.x",
                     "notes-1.7.x",
                     "notes-1.6.x",
                     "notes-1.5.x",
@@ -182,14 +239,19 @@
                     "notes-1.3.x",
                     "notes-1.2.x",
                     "notes-1.1.x",
-                    "notes-1.0.x",
-                    "notes-master"
+                    "notes-1.0.x"
                 ]
        },
        {"heading": "Developer"},
        {"pages" : [
                     "dev",
-                    "export"
+                    "export",
+                    "architecture"
+                ]
+       },
+       {"heading": "Blogs"},
+       {"pages" : [
+                    "coursier_migration"
                 ]
        }
 

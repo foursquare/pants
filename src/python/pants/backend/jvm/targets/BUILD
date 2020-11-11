@@ -23,13 +23,11 @@ python_library(
     'jvm_prep_command.py',
     'jvm_target.py',
     'managed_jar_dependencies.py',
+    'runtime_platform_mixin.py',
     'tools_jar.py',
     'unpacked_jars.py',
   ],
   dependencies = [
-    '3rdparty/python/twitter/commons:twitter.common.collections',
-    '3rdparty/python/twitter/commons:twitter.common.dirutil',
-    '3rdparty/python:six',
     'src/python/pants/java/jar',
     'src/python/pants/backend/jvm/subsystems:java',
     'src/python/pants/backend/jvm/subsystems:junit',
@@ -44,10 +42,11 @@ python_library(
     'src/python/pants/fs',
     'src/python/pants/source',
     'src/python/pants/util:memo',
-    'src/python/pants/util:meta',
     'src/python/pants/util:netrc',
     'src/python/pants/util:objects',
+    'src/python/pants/util:ordered_set',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -59,7 +58,6 @@ python_library(
     'javac_plugin.py',
   ],
   dependencies = [
-    '3rdparty/python:six',
     ':jvm',
     'src/python/pants/backend/jvm/subsystems:java',
     'src/python/pants/backend/jvm/subsystems:junit',
@@ -67,6 +65,7 @@ python_library(
     'src/python/pants/base:exceptions',
     'src/python/pants/build_graph',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -75,15 +74,17 @@ python_library(
     'scala_library.py',
     'scalac_plugin.py',
     'scala_jar_dependency.py',
+    'scala_exclude.py',
   ],
   dependencies = [
     ':jvm',
-    '3rdparty/python/twitter/commons:twitter.common.collections',
     'src/python/pants/java/jar',
     'src/python/pants/backend/jvm/subsystems:scala_platform',
+    'src/python/pants/backend/jvm/subsystems:scoverage_platform',
     'src/python/pants/base:exceptions',
     'src/python/pants/base:validation',
     'src/python/pants/build_graph',
     'src/python/pants/util:memo',
   ],
+  tags = {"partially_type_checked"},
 )

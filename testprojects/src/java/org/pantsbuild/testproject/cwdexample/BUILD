@@ -3,9 +3,10 @@
 
 jvm_binary(
   basename='cwd-example',
-  source='ExampleCwd.java',
+  sources=['ExampleCwd.java'],
   main='org.pantsbuild.testproject.cwdexample.ExampleCwd',
   dependencies=[
     "3rdparty:guava",
+    "testprojects/3rdparty/checkstyle"
   ]
 )

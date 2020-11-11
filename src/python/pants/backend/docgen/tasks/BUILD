@@ -4,11 +4,11 @@
 python_library(
   dependencies = [
     ':resources',
+    '3rdparty/python:dataclasses',
     '3rdparty/python:docutils',
     '3rdparty/python:Markdown',
     '3rdparty/python:Pygments',
     '3rdparty/python:setuptools',
-    '3rdparty/python:six',
     '3rdparty/python/twitter/commons:twitter.common.confluence',
     'src/python/pants/backend/docgen/targets',
     'src/python/pants/base:build_environment',
@@ -25,9 +25,10 @@ python_library(
     'src/python/pants/util:desktop',
     'src/python/pants/util:dirutil',
   ],
+  tags = {"partially_type_checked"},
 )
 
 resources(
   name = 'resources',
-  sources = globs('templates/*/*.mustache'),
+  sources = ['templates/*/*.mustache'],
 )

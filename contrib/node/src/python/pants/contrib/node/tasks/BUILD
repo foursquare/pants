@@ -10,12 +10,14 @@ target(
     ':node_run',
     ':node_test',
     ':javascript_style',
+    ':node_install',
   ]
 )
 
 python_library(
   name='node_paths',
-  sources=['node_paths.py']
+  sources=['node_paths.py'],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -27,7 +29,8 @@ python_library(
     'src/python/pants/base:workunit',
     'src/python/pants/task',
     'src/python/pants/util:contextutil',
-  ]
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -39,7 +42,8 @@ python_library(
     'src/python/pants/base:build_environment',
     'src/python/pants/fs',
     'src/python/pants/util:dirutil',
-  ]
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -51,7 +55,8 @@ python_library(
     'src/python/pants/base:exceptions',
     'src/python/pants/task',
     'src/python/pants/util:contextutil',
-  ]
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -67,7 +72,8 @@ python_library(
     'src/python/pants/base:workunit',
     'src/python/pants/task',
     'src/python/pants/util:memo',
-  ]
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -78,7 +84,8 @@ python_library(
     ':node_task',
     'src/python/pants/base:exceptions',
     'src/python/pants/base:workunit',
-  ]
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -90,7 +97,8 @@ python_library(
     'src/python/pants/base:exceptions',
     'src/python/pants/base:workunit',
     'src/python/pants/util:contextutil',
-  ]
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -103,7 +111,8 @@ python_library(
     'src/python/pants/base:workunit',
     'src/python/pants/util:contextutil',
     'src/python/pants/util:process_handler',
-  ]
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -118,5 +127,19 @@ python_library(
     'src/python/pants/task',
     'src/python/pants/util:contextutil',
     'src/python/pants/util:process_handler',
-  ]
+  ],
+  tags = {'partially_type_checked'},
+)
+
+python_library(
+  name='node_install',
+  sources=['node_install.py'],
+  dependencies=[
+    ':node_paths',
+    ':node_task',
+    'src/python/pants/base:exceptions',
+    'src/python/pants/base:workunit',
+    'src/python/pants/util:contextutil',
+  ],
+  tags = {"partially_type_checked"},
 )

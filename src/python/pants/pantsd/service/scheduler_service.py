@@ -1,147 +1,157 @@
-# coding=utf-8
 # Copyright 2016 Pants project contributors (see CONTRIBUTORS.md).
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 
-from __future__ import (absolute_import, division, generators, nested_scopes, print_function,
-                        unicode_literals, with_statement)
-
 import logging
-import Queue
-import threading
+import time
+from typing import List, Optional, Tuple, cast
 
-from twitter.common.dirutil import Fileset
+import psutil
 
+from pants.engine.fs import PathGlobs, Snapshot
+from pants.engine.internals.scheduler import ExecutionTimeoutError
+from pants.init.engine_initializer import LegacyGraphScheduler
+from pants.pantsd.service.fs_event_service import FSEventService
 from pants.pantsd.service.pants_service import PantsService
 
 
 class SchedulerService(PantsService):
-  """The pantsd scheduler service.
+    """The pantsd scheduler service.
 
-  This service holds an online Scheduler instance that is primed via watchman filesystem events.
-  This provides for a quick fork of pants runs (via the pailgun) with a fully primed ProductGraph
-  in memory.
-  """
-
-  QUEUE_SIZE = 64
-
-  def __init__(self, fs_event_service, legacy_graph_helper, build_root, invalidation_globs):
+    This service holds an online Scheduler instance that is primed via watchman filesystem events.
     """
-    :param FSEventService fs_event_service: An unstarted FSEventService instance for setting up
-                                            filesystem event handlers.
-    :param LegacyGraphHelper legacy_graph_helper: The LegacyGraphHelper instance for graph
-                                                  construction.
-    :param str build_root: The current build root.
-    :param list invalidation_globs: A list of `globs` that when encountered in filesystem event
-                                    subscriptions will tear down the daemon.
-    """
-    super(SchedulerService, self).__init__()
-    self._fs_event_service = fs_event_service
-    self._graph_helper = legacy_graph_helper
-    self._invalidation_globs = invalidation_globs
-    self._build_root = build_root
 
-    self._scheduler = legacy_graph_helper.scheduler
-    self._logger = logging.getLogger(__name__)
-    self._event_queue = Queue.Queue(maxsize=self.QUEUE_SIZE)
-    self._watchman_is_running = threading.Event()
-    self._invalidating_files = set()
+    # The interval on which we will long-poll the invalidation globs. If a glob changes, the poll
+    # will return immediately, so this value primarily affects how frequently the `run` method
+    # will check the terminated condition.
+    INVALIDATION_POLL_INTERVAL = 0.5
+    # A grace period after startup that we will wait before enforcing our pid.
+    PIDFILE_GRACE_PERIOD = 5
 
-  @property
-  def change_calculator(self):
-    """Surfaces the change calculator."""
-    return self._graph_helper.change_calculator
+    def __init__(
+        self,
+        *,
+        fs_event_service: Optional[FSEventService],
+        legacy_graph_scheduler: LegacyGraphScheduler,
+        build_root: str,
+        invalidation_globs: List[str],
+        pidfile: str,
+        pid: int,
+        max_memory_usage_in_bytes: int,
+    ) -> None:
+        """
+        :param fs_event_service: An unstarted FSEventService instance for setting up filesystem event handlers.
+        :param legacy_graph_scheduler: The LegacyGraphScheduler instance for graph construction.
+        :param build_root: The current build root.
+        :param invalidation_globs: A list of `globs` that when encountered in filesystem event
+                                   subscriptions will tear down the daemon.
+        :param pidfile: A pidfile which should contain this processes' pid in order for the daemon
+                        to remain valid.
+        :param pid: This processes' pid.
+        :param max_memory_usage_in_bytes: The maximum memory usage of the process: the service will
+                                          shut down if it observes more than this amount in use.
+        """
+        super().__init__()
+        self._fs_event_service = fs_event_service
+        self._graph_helper = legacy_graph_scheduler
+        self._build_root = build_root
 
-  @staticmethod
-  def _combined_invalidating_fileset_from_globs(glob_strs, root):
-    return set.union(*(Fileset.globs(glob_str, root=root)() for glob_str in glob_strs))
+        self._scheduler = legacy_graph_scheduler.scheduler
+        # This session is only used for checking whether any invalidation globs have been invalidated.
+        # It is not involved with a build itself; just with deciding when we should restart pantsd.
+        self._scheduler_session = self._scheduler.new_session(
+            zipkin_trace_v2=False, build_id="scheduler_service_session",
+        )
+        self._logger = logging.getLogger(__name__)
 
-  def setup(self, lifecycle_lock, fork_lock):
-    """Service setup."""
-    super(SchedulerService, self).setup(lifecycle_lock, fork_lock)
-    # Register filesystem event handlers on an FSEventService instance.
-    self._fs_event_service.register_all_files_handler(self._enqueue_fs_event)
+        # NB: We declare these as a single field so that they can be changed atomically.
+        self._invalidation_globs_and_snapshot: Tuple[Tuple[str, ...], Optional[Snapshot]] = (
+            tuple(invalidation_globs),
+            None,
+        )
 
-    # N.B. We compute this combined set eagerly at launch with an assumption that files
-    # that exist at startup are the only ones that can affect the running daemon.
-    if self._invalidation_globs:
-      self._invalidating_files = self._combined_invalidating_fileset_from_globs(
-        self._invalidation_globs,
-        self._build_root
-      )
-    self._logger.info('watching invalidating files: {}'.format(self._invalidating_files))
+        self._pidfile = pidfile
+        self._pid = pid
+        self._max_memory_usage_in_bytes = max_memory_usage_in_bytes
 
-  def _enqueue_fs_event(self, event):
-    """Watchman filesystem event handler for BUILD/requirements.txt updates. Called via a thread."""
-    self._logger.info('enqueuing {} changes for subscription {}'
-                      .format(len(event['files']), event['subscription']))
-    self._event_queue.put(event)
+    def _get_snapshot(self, globs: Tuple[str, ...], poll: bool) -> Optional[Snapshot]:
+        """Returns a Snapshot of the input globs.
 
-  def _maybe_invalidate_scheduler(self, files):
-    invalidating_files = self._invalidating_files
-    if any(f in invalidating_files for f in files):
-      self._logger.fatal('saw file events covered by invalidation globs, terminating the daemon.')
-      self.terminate()
+        If poll=True, will wait for up to INVALIDATION_POLL_INTERVAL for the globs to have changed,
+        and will return None if they have not changed.
+        """
+        timeout = self.INVALIDATION_POLL_INTERVAL if poll else None
+        try:
+            snapshot = self._scheduler_session.product_request(
+                Snapshot, subjects=[PathGlobs(globs)], poll=poll, timeout=timeout,
+            )[0]
+            return cast(Snapshot, snapshot)
+        except ExecutionTimeoutError:
+            if poll:
+                return None
+            raise
 
-  def _handle_batch_event(self, files):
-    self._logger.debug('handling change event for: %s', files)
+    def _check_invalidation_globs(self, poll: bool):
+        """Check the digest of our invalidation Snapshot and exit if it has changed."""
+        globs, invalidation_snapshot = self._invalidation_globs_and_snapshot
+        assert invalidation_snapshot is not None, "Should have been eagerly initialized in run."
 
-    with self.lifecycle_lock:
-      self._maybe_invalidate_scheduler(files)
+        snapshot = self._get_snapshot(globs, poll=poll)
+        if snapshot is None or snapshot.digest == invalidation_snapshot.digest:
+            return
 
-    with self.fork_lock:
-      self._scheduler.invalidate_files(files)
+        before = set(invalidation_snapshot.files + invalidation_snapshot.dirs)
+        after = set(snapshot.files + snapshot.dirs)
+        added = after - before
+        removed = before - after
+        if added or removed:
+            description = f"+{added or '{}'}, -{removed or '{}'}"
+        else:
+            description = f"content changed ({snapshot.digest} fs {invalidation_snapshot.digest})"
+        self._logger.critical(
+            f"saw filesystem changes covered by invalidation globs: {description}. terminating the daemon."
+        )
+        self.terminate()
 
-  def _process_event_queue(self):
-    """File event notification queue processor."""
-    try:
-      event = self._event_queue.get(timeout=1)
-    except Queue.Empty:
-      return
+    def _check_pidfile(self):
+        try:
+            with open(self._pidfile, "r") as f:
+                pid_from_file = f.read()
+        except IOError:
+            raise Exception(f"Could not read pants pidfile at {self._pidfile}.")
+        if int(pid_from_file) != self._pid:
+            raise Exception(f"Another instance of pantsd is running at {pid_from_file}")
 
-    try:
-      subscription, is_initial_event, files = (event['subscription'],
-                                               event['is_fresh_instance'],
-                                               [f.decode('utf-8') for f in event['files']])
-    except (KeyError, UnicodeDecodeError) as e:
-      self._logger.warn('%r raised by invalid watchman event: %s', e, event)
-      return
+    def _check_memory_usage(self):
+        memory_usage_in_bytes = psutil.Process(self._pid).memory_info()[0]
+        if memory_usage_in_bytes > self._max_memory_usage_in_bytes:
+            raise Exception(
+                f"pantsd process {self._pid} was using "
+                f"{memory_usage_in_bytes} bytes of memory (above the limit of "
+                f"{self._max_memory_usage_in_bytes} bytes)."
+            )
 
-    self._logger.debug('processing {} files for subscription {} (first_event={})'
-                       .format(len(files), subscription, is_initial_event))
+    def _check_invalidation_watcher_liveness(self):
+        self._scheduler.check_invalidation_watcher_liveness()
 
-    # The first watchman event is a listing of all files - ignore it.
-    if not is_initial_event:
-      self._handle_batch_event(files)
+    def run(self):
+        """Main service entrypoint."""
+        # N.B. We compute the invalidating fileset eagerly at launch with an assumption that files
+        # that exist at startup are the only ones that can affect the running daemon.
+        globs, _ = self._invalidation_globs_and_snapshot
+        self._invalidation_globs_and_snapshot = (globs, self._get_snapshot(globs, poll=False))
+        self._logger.debug("watching invalidation patterns: {}".format(globs))
+        pidfile_deadline = time.time() + self.PIDFILE_GRACE_PERIOD
 
-    if not self._watchman_is_running.is_set():
-      self._watchman_is_running.set()
-
-    self._event_queue.task_done()
-
-  def product_graph_len(self):
-    """Provides the size of the captive product graph.
-
-    :returns: The node count for the captive product graph.
-    """
-    return self._scheduler.graph_len()
-
-  def warm_product_graph(self, spec_roots):
-    """Runs an execution request against the captive scheduler given a set of input specs to warm.
-
-    :returns: A `LegacyGraphHelper` instance for graph construction.
-    """
-    # If any nodes exist in the product graph, wait for the initial watchman event to avoid
-    # racing watchman startup vs invalidation events.
-    graph_len = self._scheduler.graph_len()
-    if graph_len > 0:
-      self._logger.debug('graph len was {}, waiting for initial watchman event'.format(graph_len))
-      self._watchman_is_running.wait()
-
-    with self.fork_lock:
-      self._graph_helper.warm_product_graph(spec_roots)
-      return self._graph_helper
-
-  def run(self):
-    """Main service entrypoint."""
-    while not self.is_killed:
-      self._process_event_queue()
+        while not self._state.is_terminating:
+            try:
+                self._state.maybe_pause()
+                self._check_invalidation_watcher_liveness()
+                self._check_memory_usage()
+                if time.time() > pidfile_deadline:
+                    self._check_pidfile()
+                # NB: This is a long poll that will keep us from looping too quickly here.
+                self._check_invalidation_globs(poll=True)
+            except Exception as e:
+                # Watcher failed for some reason
+                self._logger.critical(f"The scheduler was invalidated: {e!r}")
+                self.terminate()

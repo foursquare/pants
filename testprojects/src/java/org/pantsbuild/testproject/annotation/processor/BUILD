@@ -4,10 +4,12 @@
 #  annotation_processor() target to test resource mapping
 
 annotation_processor(
-  sources=globs('*.java'),
+  sources=['*.java'],
   processors=['org.pantsbuild.testproject.annotation.processor.ResourceMappingProcessor'],
   dependencies=[
-    '3rdparty:guava',
+    # NB: We use the oldest guava we can stomach here, in order to flush out classpath
+    # collisions between the compiler and annotation processors.
+    'testprojects/3rdparty/com/google/guava:ancient-guava',
   ],
 )
 

@@ -1,24 +1,49 @@
-extern crate bazel_protos;
-extern crate clap;
-extern crate env_logger;
-extern crate errno;
-extern crate fs;
-extern crate fuse;
-extern crate futures;
-extern crate hashing;
-extern crate libc;
-#[macro_use]
-extern crate log;
-extern crate protobuf;
-extern crate time;
+// Copyright 2018 Pants project contributors (see CONTRIBUTORS.md).
+// Licensed under the Apache License, Version 2.0 (see LICENSE).
 
-use futures::future::Future;
-use hashing::{Digest, Fingerprint};
-use std::collections::HashMap;
+#![deny(warnings)]
+// Enable all clippy lints except for many of the pedantic ones. It's a shame this needs to be copied and pasted across crates, but there doesn't appear to be a way to include inner attributes from a common source.
+#![deny(
+  clippy::all,
+  clippy::default_trait_access,
+  clippy::expl_impl_clone_on_copy,
+  clippy::if_not_else,
+  clippy::needless_continue,
+  clippy::unseparated_literal_suffix,
+  // TODO: Falsely triggers for async/await:
+  //   see https://github.com/rust-lang/rust-clippy/issues/5360
+  // clippy::used_underscore_binding
+)]
+// It is often more clear to show that nothing is being moved.
+#![allow(clippy::match_ref_pats)]
+// Subjective style.
+#![allow(
+  clippy::len_without_is_empty,
+  clippy::redundant_field_names,
+  clippy::too_many_arguments
+)]
+// Default isn't as big a deal as people seem to think it is.
+#![allow(clippy::new_without_default, clippy::new_ret_no_self)]
+// Arc<Mutex> can be more clear than needing to grok Orderings:
+#![allow(clippy::mutex_atomic)]
+
 use std::collections::hash_map::Entry::{Occupied, Vacant};
-use std::ffi::{CString, OsStr, OsString};
+use std::collections::HashMap;
+use std::convert::TryInto;
+use std::ffi::{OsStr, OsString};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
+
+use futures::future::FutureExt;
+use hashing::{Digest, Fingerprint};
+use log::{debug, error, warn};
+use parking_lot::Mutex;
+use store::Store;
+use tokio::runtime::Handle;
+use tokio::signal::unix::{signal, SignalKind};
+use tokio::stream::StreamExt;
+use tokio::task;
 
 const TTL: time::Timespec = time::Timespec { sec: 0, nsec: 0 };
 
@@ -32,7 +57,7 @@ fn attr_for(inode: Inode, size: u64, kind: fuse::FileType, perm: u16) -> fuse::F
   fuse::FileAttr {
     ino: inode,
     size: size,
-    // TODO: Find out whether blocks is actaully important
+    // TODO: Find out whether blocks is actually important
     blocks: 0,
     atime: CREATE_TIME,
     mtime: CREATE_TIME,
@@ -49,7 +74,7 @@ fn attr_for(inode: Inode, size: u64, kind: fuse::FileType, perm: u16) -> fuse::F
 }
 
 pub fn digest_from_filepath(str: &str) -> Result<Digest, String> {
-  let mut parts = str.split("-");
+  let mut parts = str.split('-');
   let fingerprint_str = parts
     .next()
     .ok_or_else(|| format!("Invalid digest: {} wasn't of form fingerprint-size", str))?;
@@ -93,8 +118,16 @@ enum Node {
   File(bazel_protos::remote_execution::FileNode),
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum BRFSEvent {
+  INIT,
+  DESTROY,
+}
+
 struct BuildResultFS {
-  store: fs::Store,
+  sender: Sender<BRFSEvent>,
+  runtime: task_executor::Executor,
+  store: Store,
   inode_digest_cache: HashMap<Inode, InodeDetails>,
   digest_inode_cache: HashMap<Digest, (Inode, Inode)>,
   directory_inode_cache: HashMap<Digest, Inode>,
@@ -102,8 +135,14 @@ struct BuildResultFS {
 }
 
 impl BuildResultFS {
-  pub fn new(store: fs::Store) -> BuildResultFS {
+  pub fn new(
+    sender: Sender<BRFSEvent>,
+    runtime: task_executor::Executor,
+    store: Store,
+  ) -> BuildResultFS {
     BuildResultFS {
+      sender: sender,
+      runtime: runtime,
       store: store,
       inode_digest_cache: HashMap::new(),
       digest_inode_cache: HashMap::new(),
@@ -146,64 +185,76 @@ impl BuildResultFS {
           non_executable_inode
         }))
       }
-      Vacant(entry) => match self.store.load_file_bytes_with(digest, |_| ()).wait() {
-        Ok(Some(())) => {
-          let executable_inode = self.next_inode;
-          self.next_inode += 1;
-          let non_executable_inode = self.next_inode;
-          self.next_inode += 1;
-          entry.insert((executable_inode, non_executable_inode));
-          self.inode_digest_cache.insert(
-            executable_inode,
-            InodeDetails {
-              digest: digest,
-              entry_type: EntryType::File,
-              is_executable: true,
-            },
-          );
-          self.inode_digest_cache.insert(
-            non_executable_inode,
-            InodeDetails {
-              digest: digest,
-              entry_type: EntryType::File,
-              is_executable: false,
-            },
-          );
-          Ok(Some(if is_executable {
-            executable_inode
-          } else {
-            non_executable_inode
-          }))
+      Vacant(entry) => {
+        let store = self.store.clone();
+        match self
+          .runtime
+          .block_on(async move { store.load_file_bytes_with(digest, |_| ()).await })
+        {
+          Ok(Some(((), _metadata))) => {
+            let executable_inode = self.next_inode;
+            self.next_inode += 1;
+            let non_executable_inode = self.next_inode;
+            self.next_inode += 1;
+            entry.insert((executable_inode, non_executable_inode));
+            self.inode_digest_cache.insert(
+              executable_inode,
+              InodeDetails {
+                digest: digest,
+                entry_type: EntryType::File,
+                is_executable: true,
+              },
+            );
+            self.inode_digest_cache.insert(
+              non_executable_inode,
+              InodeDetails {
+                digest: digest,
+                entry_type: EntryType::File,
+                is_executable: false,
+              },
+            );
+            Ok(Some(if is_executable {
+              executable_inode
+            } else {
+              non_executable_inode
+            }))
+          }
+          Ok(None) => Ok(None),
+          Err(err) => Err(err),
         }
-        Ok(None) => Ok(None),
-        Err(err) => Err(err),
-      },
+      }
     }
   }
 
   pub fn inode_for_directory(&mut self, digest: Digest) -> Result<Option<Inode>, String> {
     match self.directory_inode_cache.entry(digest) {
       Occupied(entry) => Ok(Some(*entry.get())),
-      Vacant(entry) => match self.store.load_directory(digest).wait() {
-        Ok(Some(_)) => {
-          // TODO: Kick off some background futures to pre-load the contents of this Directory into
-          // an in-memory cache. Keep a background CPU pool driving those Futures.
-          let inode = self.next_inode;
-          self.next_inode += 1;
-          entry.insert(inode);
-          self.inode_digest_cache.insert(
-            inode,
-            InodeDetails {
-              digest: digest,
-              entry_type: EntryType::Directory,
-              is_executable: true,
-            },
-          );
-          Ok(Some(inode))
+      Vacant(entry) => {
+        let store = self.store.clone();
+        match self
+          .runtime
+          .block_on(async move { store.load_directory(digest).await })
+        {
+          Ok(Some(_)) => {
+            // TODO: Kick off some background futures to pre-load the contents of this Directory into
+            // an in-memory cache. Keep a background CPU pool driving those Futures.
+            let inode = self.next_inode;
+            self.next_inode += 1;
+            entry.insert(inode);
+            self.inode_digest_cache.insert(
+              inode,
+              InodeDetails {
+                digest: digest,
+                entry_type: EntryType::Directory,
+                is_executable: true,
+              },
+            );
+            Ok(Some(inode))
+          }
+          Ok(None) => Ok(None),
+          Err(err) => Err(err),
         }
-        Ok(None) => Ok(None),
-        Err(err) => Err(err),
-      },
+      }
     }
   }
 
@@ -273,10 +324,13 @@ impl BuildResultFS {
           entry_type: EntryType::Directory,
           ..
         }) => {
-          let maybe_directory = self.store.load_directory(digest).wait();
+          let store = self.store.clone();
+          let maybe_directory = self
+            .runtime
+            .block_on(async move { store.load_directory(digest).await });
 
           match maybe_directory {
-            Ok(Some(directory)) => {
+            Ok(Some((directory, _metadata))) => {
               let mut entries = vec![
                 ReaddirEntry {
                   inode: inode,
@@ -308,7 +362,10 @@ impl BuildResultFS {
               });
 
               for (digest, name, filetype, is_executable) in directories.chain(files) {
-                let child_digest = digest.into();
+                let child_digest = digest.try_into().map_err(|err| {
+                  error!("Error parsing digest: {:?}", err);
+                  libc::ENOENT
+                })?;
                 let maybe_child_inode = match filetype {
                   fuse::FileType::Directory => self.inode_for_directory(child_digest),
                   fuse::FileType::RegularFile => self.inode_for_file(child_digest, is_executable),
@@ -334,16 +391,14 @@ impl BuildResultFS {
 
               Ok(entries)
             }
-            Ok(None) => {
-              return Err(libc::ENOENT);
-            }
+            Ok(None) => Err(libc::ENOENT),
             Err(err) => {
               error!("Error loading directory {:?}: {}", digest, err);
-              return Err(libc::EINVAL);
+              Err(libc::EINVAL)
             }
           }
         }
-        _ => return Err(libc::ENOENT),
+        _ => Err(libc::ENOENT),
       },
     }
   }
@@ -355,86 +410,113 @@ impl BuildResultFS {
 //  3: /directory
 //  ... created on demand and cached for the lifetime of the program.
 impl fuse::Filesystem for BuildResultFS {
-  // Used to answer stat calls
-  fn lookup(&mut self, _req: &fuse::Request, parent: Inode, name: &OsStr, reply: fuse::ReplyEntry) {
-    let r = match (parent, name.to_str()) {
-      (ROOT, Some("digest")) => Ok(dir_attr_for(DIGEST_ROOT)),
-      (ROOT, Some("directory")) => Ok(dir_attr_for(DIRECTORY_ROOT)),
-      (DIGEST_ROOT, Some(digest_str)) => match digest_from_filepath(digest_str) {
-        Ok(digest) => self
-          .inode_for_file(digest, true)
-          .map_err(|err| {
-            error!("Error loading file by digest {}: {}", digest_str, err);
-            libc::EINVAL
-          })
-          .and_then(|maybe_inode| {
-            maybe_inode
-              .and_then(|inode| self.file_attr_for(inode))
-              .ok_or(libc::ENOENT)
-          }),
-        Err(err) => {
-          warn!("Invalid digest for file in digest root: {}", err);
-          Err(libc::ENOENT)
-        }
-      },
-      (DIRECTORY_ROOT, Some(digest_str)) => match digest_from_filepath(digest_str) {
-        Ok(digest) => self.dir_attr_for(digest),
-        Err(err) => {
-          warn!("Invalid digest for directroy in directory root: {}", err);
-          Err(libc::ENOENT)
-        }
-      },
-      (parent, Some(filename)) => {
-        let maybe_cache_entry = self
-          .inode_digest_cache
-          .get(&parent)
-          .map(|entry| entry.clone())
-          .ok_or(libc::ENOENT);
-        maybe_cache_entry
-          .and_then(|cache_entry| {
-            let parent_digest = cache_entry.digest.clone();
-            self
-              .store
-              .load_directory(parent_digest)
-              .wait()
-              .map_err(|err| {
-                error!("Error reading directory {:?}: {}", parent_digest, err);
-                libc::EINVAL
-              })?
-              .and_then(|directory| self.node_for_digest(&directory, filename))
-              .ok_or(libc::ENOENT)
-          })
-          .and_then(|node| match node {
-            Node::Directory(directory_node) => {
-              let digest = directory_node.get_digest().into();
-              self.dir_attr_for(digest)
-            }
-            Node::File(file_node) => {
-              let digest = file_node.get_digest().into();
-              self
-                .inode_for_file(digest, file_node.get_is_executable())
-                .map_err(|err| {
-                  error!("Error loading file by digest {}: {}", filename, err);
-                  libc::EINVAL
-                })
-                .and_then(|maybe_inode| {
-                  maybe_inode
-                    .and_then(|inode| self.file_attr_for(inode))
-                    .ok_or(libc::ENOENT)
-                })
-            }
-          })
-      }
-      _ => Err(libc::ENOENT),
-    };
-    match r {
-      Ok(r) => reply.entry(&TTL, &r, 1),
-      Err(err) => reply.error(err),
-    }
+  fn init(&mut self, _req: &fuse::Request) -> Result<(), libc::c_int> {
+    self.sender.send(BRFSEvent::INIT).map_err(|_| 1)
   }
 
-  fn getattr(&mut self, _req: &fuse::Request, inode: Inode, reply: fuse::ReplyAttr) {
-    match inode {
+  fn destroy(&mut self, _req: &fuse::Request) {
+    self
+      .sender
+      .send(BRFSEvent::DESTROY)
+      .unwrap_or_else(|err| warn!("Failed to send {:?} event: {}", BRFSEvent::DESTROY, err))
+  }
+
+  // Used to answer stat calls
+  fn lookup(
+    &mut self,
+    _req: &fuse::Request<'_>,
+    parent: Inode,
+    name: &OsStr,
+    reply: fuse::ReplyEntry,
+  ) {
+    let runtime = self.runtime.clone();
+    runtime.enter(|| {
+      let r = match (parent, name.to_str()) {
+        (ROOT, Some("digest")) => Ok(dir_attr_for(DIGEST_ROOT)),
+        (ROOT, Some("directory")) => Ok(dir_attr_for(DIRECTORY_ROOT)),
+        (DIGEST_ROOT, Some(digest_str)) => match digest_from_filepath(digest_str) {
+          Ok(digest) => self
+            .inode_for_file(digest, true)
+            .map_err(|err| {
+              error!("Error loading file by digest {}: {}", digest_str, err);
+              libc::EINVAL
+            })
+            .and_then(|maybe_inode| {
+              maybe_inode
+                .and_then(|inode| self.file_attr_for(inode))
+                .ok_or(libc::ENOENT)
+            }),
+          Err(err) => {
+            warn!("Invalid digest for file in digest root: {}", err);
+            Err(libc::ENOENT)
+          }
+        },
+        (DIRECTORY_ROOT, Some(digest_str)) => match digest_from_filepath(digest_str) {
+          Ok(digest) => self.dir_attr_for(digest),
+          Err(err) => {
+            warn!("Invalid digest for directory in directory root: {}", err);
+            Err(libc::ENOENT)
+          }
+        },
+        (parent, Some(filename)) => {
+          let maybe_cache_entry = self
+            .inode_digest_cache
+            .get(&parent)
+            .cloned()
+            .ok_or(libc::ENOENT);
+          maybe_cache_entry
+            .and_then(|cache_entry| {
+              let store = self.store.clone();
+              let parent_digest = cache_entry.digest;
+              self
+                .runtime
+                .block_on(async move { store.load_directory(parent_digest).await })
+                .map_err(|err| {
+                  error!("Error reading directory {:?}: {}", parent_digest, err);
+                  libc::EINVAL
+                })?
+                .and_then(|(directory, _metadata)| self.node_for_digest(&directory, filename))
+                .ok_or(libc::ENOENT)
+            })
+            .and_then(|node| match node {
+              Node::Directory(directory_node) => {
+                let digest = directory_node.get_digest().try_into().map_err(|err| {
+                  error!("Error parsing digest: {:?}", err);
+                  libc::ENOENT
+                })?;
+                self.dir_attr_for(digest)
+              }
+              Node::File(file_node) => {
+                let digest = file_node.get_digest().try_into().map_err(|err| {
+                  error!("Error parsing digest: {:?}", err);
+                  libc::ENOENT
+                })?;
+                self
+                  .inode_for_file(digest, file_node.get_is_executable())
+                  .map_err(|err| {
+                    error!("Error loading file by digest {}: {}", filename, err);
+                    libc::EINVAL
+                  })
+                  .and_then(|maybe_inode| {
+                    maybe_inode
+                      .and_then(|inode| self.file_attr_for(inode))
+                      .ok_or(libc::ENOENT)
+                  })
+              }
+            })
+        }
+        _ => Err(libc::ENOENT),
+      };
+      match r {
+        Ok(r) => reply.entry(&TTL, &r, 1),
+        Err(err) => reply.error(err),
+      }
+    })
+  }
+
+  fn getattr(&mut self, _req: &fuse::Request<'_>, inode: Inode, reply: fuse::ReplyAttr) {
+    let runtime = self.runtime.clone();
+    runtime.enter(|| match inode {
       ROOT => reply.attr(&TTL, &dir_attr_for(ROOT)),
       DIGEST_ROOT => reply.attr(&TTL, &dir_attr_for(DIGEST_ROOT)),
       DIRECTORY_ROOT => reply.attr(&TTL, &dir_attr_for(DIRECTORY_ROOT)),
@@ -452,120 +534,139 @@ impl fuse::Filesystem for BuildResultFS {
         }) => reply.attr(&TTL, &dir_attr_for(inode)),
         _ => reply.error(libc::ENOENT),
       },
-    }
+    })
   }
 
   // TODO: Find out whether fh is ever passed if open isn't explicitly implemented (and whether offset is ever negative)
   fn read(
     &mut self,
-    _req: &fuse::Request,
+    _req: &fuse::Request<'_>,
     inode: Inode,
     _fh: u64,
     offset: i64,
     size: u32,
     reply: fuse::ReplyData,
   ) {
-    match self.inode_digest_cache.get(&inode) {
-      Some(&InodeDetails {
-        digest,
-        entry_type: EntryType::File,
-        ..
-      }) => {
-        let reply = Arc::new(Mutex::new(Some(reply)));
-        let reply2 = reply.clone();
-        // TODO: Read from a cache of Futures driven from a CPU pool, so we can merge in-flight
-        // requests, rather than reading from the store directly here.
-        let result: Result<(), ()> = self
-          .store
-          .load_file_bytes_with(digest, move |bytes| {
-            let begin = std::cmp::min(offset as usize, bytes.len());
-            let end = std::cmp::min(offset as usize + size as usize, bytes.len());
-            let mut reply = reply.lock().unwrap();
-            reply.take().unwrap().data(&bytes.slice(begin, end));
-          })
-          .map(|v| match v {
-            Some(_) => {}
-            None => {
-              let maybe_reply = reply2.lock().unwrap().take();
-              if let Some(reply) = maybe_reply {
-                reply.error(libc::ENOENT);
+    let runtime = self.runtime.clone();
+    runtime.enter(|| {
+      match self.inode_digest_cache.get(&inode) {
+        Some(&InodeDetails {
+          digest,
+          entry_type: EntryType::File,
+          ..
+        }) => {
+          let reply = Arc::new(Mutex::new(Some(reply)));
+          let reply2 = reply.clone();
+          // TODO: Read from a cache of Futures driven from a CPU pool, so we can merge in-flight
+          // requests, rather than reading from the store directly here.
+          let store = self.store.clone();
+          let result: Result<(), ()> = self
+            .runtime
+            .block_on(async move {
+              store
+                .load_file_bytes_with(digest, move |bytes| {
+                  let begin = std::cmp::min(offset as usize, bytes.len());
+                  let end = std::cmp::min(offset as usize + size as usize, bytes.len());
+                  let mut reply = reply.lock();
+                  reply.take().unwrap().data(&bytes[begin..end]);
+                })
+                .await
+            })
+            .map(|v| {
+              if v.is_none() {
+                let maybe_reply = reply2.lock().take();
+                if let Some(reply) = maybe_reply {
+                  reply.error(libc::ENOENT);
+                }
               }
-            }
-          })
-          .or_else(|err| {
-            error!("Error loading bytes for {:?}: {}", digest, err);
-            let maybe_reply = reply2.lock().unwrap().take();
-            if let Some(reply) = maybe_reply {
-              reply.error(libc::EINVAL);
-            }
-            Ok(())
-          })
-          .wait();
-        result.expect("Error from read future which should have been handled in the future ");
+            })
+            .or_else(|err| {
+              error!("Error loading bytes for {:?}: {}", digest, err);
+              let maybe_reply = reply2.lock().take();
+              if let Some(reply) = maybe_reply {
+                reply.error(libc::EINVAL);
+              }
+              Ok(())
+            });
+          result.expect("Error from read future which should have been handled in the future ");
+        }
+        _ => reply.error(libc::ENOENT),
       }
-      _ => reply.error(libc::ENOENT),
-    }
+    })
   }
 
   fn readdir(
     &mut self,
-    _req: &fuse::Request,
+    _req: &fuse::Request<'_>,
     inode: Inode,
     // TODO: Find out whether fh is ever passed if open isn't explicitly implemented (and whether offset is ever negative)
     _fh: u64,
     offset: i64,
     mut reply: fuse::ReplyDirectory,
   ) {
-    match self.readdir_entries(inode) {
-      Ok(entries) => {
-        // 0 is a magic offset which means no offset, whereas a non-zero offset means start
-        // _after_ that entry. Inconsistency is fun.
-        let to_skip = if offset == 0 { 0 } else { offset + 1 } as usize;
-        let mut i = offset;
-        for entry in entries.into_iter().skip(to_skip) {
-          if reply.add(entry.inode, i, entry.kind, entry.name) {
-            // Buffer is full, don't add more entries.
-            break;
+    let runtime = self.runtime.clone();
+    runtime.enter(|| {
+      match self.readdir_entries(inode) {
+        Ok(entries) => {
+          // 0 is a magic offset which means no offset, whereas a non-zero offset means start
+          // _after_ that entry. Inconsistency is fun.
+          let to_skip = if offset == 0 { 0 } else { offset + 1 } as usize;
+          let mut i = offset;
+          for entry in entries.into_iter().skip(to_skip) {
+            if reply.add(entry.inode, i, entry.kind, entry.name) {
+              // Buffer is full, don't add more entries.
+              break;
+            }
+            i += 1;
           }
-          i += 1;
+          reply.ok();
         }
-        reply.ok();
+        Err(err) => reply.error(err),
       }
-      Err(err) => reply.error(err),
-    }
+    })
   }
 
   // If this isn't implemented, OSX will try to manipulate ._ files to manage xattrs out of band, which adds both overhead and logspam.
   fn listxattr(
     &mut self,
-    _req: &fuse::Request,
+    _req: &fuse::Request<'_>,
     _inode: Inode,
     _size: u32,
     reply: fuse::ReplyXattr,
   ) {
-    reply.size(0);
+    let runtime = self.runtime.clone();
+    runtime.enter(|| {
+      reply.size(0);
+    })
   }
 }
 
 pub fn mount<'a, P: AsRef<Path>>(
   mount_path: P,
-  store: fs::Store,
-) -> std::io::Result<fuse::BackgroundSession<'a>> {
+  store: Store,
+  runtime: task_executor::Executor,
+) -> std::io::Result<(fuse::BackgroundSession<'a>, Receiver<BRFSEvent>)> {
   // TODO: Work out how to disable caching in the filesystem
   let options = ["-o", "ro", "-o", "fsname=brfs", "-o", "noapplexattr"]
     .iter()
-    .map(|o| o.as_ref())
+    .map(<&str>::as_ref)
     .collect::<Vec<&OsStr>>();
 
-  debug!("About to spawn_mount with options {:?}", options);
+  let (sender, receiver) = channel();
+  let brfs = BuildResultFS::new(sender, runtime, store);
 
-  let fs = unsafe { fuse::spawn_mount(BuildResultFS::new(store), &mount_path, &options) };
-  debug!("Did spawn mount");
-  fs
+  debug!("About to spawn_mount with options {:?}", options);
+  let result = unsafe { fuse::spawn_mount(brfs, &mount_path, &options) };
+  // N.B.: The session won't be used by the caller, but we return it since a reference must be
+  // maintained to prevent early dropping which unmounts the filesystem.
+  result.map(|session| (session, receiver))
 }
 
-fn main() {
-  let default_store_path = std::env::home_dir()
+#[tokio::main]
+async fn main() {
+  env_logger::init();
+
+  let default_store_path = dirs::home_dir()
     .expect("Couldn't find homedir")
     .join(".cache")
     .join("pants")
@@ -578,369 +679,141 @@ fn main() {
         .long("local-store-path")
         .default_value_os(default_store_path.as_ref())
         .required(false),
-    )
-    .arg(
+    ).arg(
       clap::Arg::with_name("server-address")
         .takes_value(true)
         .long("server-address")
         .required(false),
-    )
-    .arg(
+    ).arg(
+      clap::Arg::with_name("remote-instance-name")
+        .takes_value(true)
+        .long("remote-instance-name")
+        .required(false),
+    ).arg(
+      clap::Arg::with_name("root-ca-cert-file")
+        .help("Path to file containing root certificate authority certificates. If not set, TLS will not be used when connecting to the remote.")
+        .takes_value(true)
+        .long("root-ca-cert-file")
+        .required(false)
+    ).arg(
+      clap::Arg::with_name("oauth-bearer-token-file")
+        .help("Path to file containing oauth bearer token. If not set, no authorization will be provided to remote servers.")
+        .takes_value(true)
+        .long("oauth-bearer-token-file")
+        .required(false)
+    ).arg(
       clap::Arg::with_name("mount-path")
         .required(true)
         .takes_value(true),
-    )
-    .get_matches();
+    ).get_matches();
 
   let mount_path = args.value_of("mount-path").unwrap();
   let store_path = args.value_of("local-store-path").unwrap();
 
-  // Unmount whatever happens to be mounted there already.
-  // This is handy for development, but should probably be removed :)
-  let unmount_return = unmount(mount_path);
-  if unmount_return != 0 {
-    match errno::errno() {
-      errno::Errno(22) => {
-        debug!("unmount failed, continuing because error code suggests directory was not mounted")
-      }
-      v => panic!("Error unmounting: {:?}", v),
-    }
-  }
+  let root_ca_certs = if let Some(path) = args.value_of("root-ca-cert-file") {
+    Some(std::fs::read(path).expect("Error reading root CA certs file"))
+  } else {
+    None
+  };
 
-  let pool = Arc::new(fs::ResettablePool::new("brfs-".to_owned()));
+  let oauth_bearer_token = if let Some(path) = args.value_of("oauth-bearer-token-file") {
+    Some(std::fs::read_to_string(path).expect("Error reading oauth bearer token file"))
+  } else {
+    None
+  };
+
+  let runtime = task_executor::Executor::new(Handle::current());
+
   let store = match args.value_of("server-address") {
-    Some(address) => fs::Store::with_remote(
+    Some(address) => Store::with_remote(
+      runtime.clone(),
       &store_path,
-      pool,
-      address.to_owned(),
+      vec![address.to_owned()],
+      args.value_of("remote-instance-name").map(str::to_owned),
+      root_ca_certs,
+      oauth_bearer_token,
       1,
       4 * 1024 * 1024,
       std::time::Duration::from_secs(5 * 60),
+      // TODO: Take a command line arg.
+      serverset::BackoffConfig::new(
+        std::time::Duration::from_secs(1),
+        1.2,
+        std::time::Duration::from_secs(20),
+      )
+      .expect("Error making BackoffConfig"),
+      1,
+      1,
     ),
-    None => fs::Store::local_only(&store_path, pool),
-  }.expect("Error making store");
+    None => Store::local_only(runtime.clone(), &store_path),
+  }
+  .expect("Error making store");
 
-  let _fs = mount(mount_path, store).expect("Error mounting");
-  loop {}
-}
-
-#[cfg(target_os = "macos")]
-fn unmount(mount_path: &str) -> i32 {
-  unsafe { libc::unmount(CString::new(mount_path).unwrap().as_ptr(), 0) }
-}
-
-#[cfg(target_os = "linux")]
-fn unmount(mount_path: &str) -> i32 {
-  unsafe { libc::umount(CString::new(mount_path).unwrap().as_ptr()) }
-}
-
-#[cfg(test)]
-mod test {
-  extern crate tempdir;
-  extern crate testutil;
-
-  use fs;
-  use futures::future::Future;
-  use hashing;
-  use self::tempdir::TempDir;
-  use std::sync::Arc;
-  use super::mount;
-  use self::testutil::{file, data::{TestData, TestDirectory}};
-
-  #[test]
-  fn missing_digest() {
-    let store_dir = TempDir::new("store").unwrap();
-    let mount_dir = TempDir::new("mount").unwrap();
-
-    let store = fs::Store::local_only(
-      store_dir.path(),
-      Arc::new(fs::ResettablePool::new("test-pool-".to_string())),
-    ).expect("Error creating local store");
-
-    let _fs = mount(mount_dir.path(), store).expect("Mounting");
-    assert!(!&mount_dir
-      .path()
-      .join("digest")
-      .join(digest_to_filepath(&TestData::roland().digest()))
-      .exists());
+  #[derive(Clone, Copy, Debug)]
+  enum Sig {
+    INT,
+    TERM,
+    Unmount,
   }
 
-  #[test]
-  fn read_file_by_digest() {
-    let store_dir = TempDir::new("store").unwrap();
-    let mount_dir = TempDir::new("mount").unwrap();
-
-    let store = fs::Store::local_only(
-      store_dir.path(),
-      Arc::new(fs::ResettablePool::new("test-pool-".to_string())),
-    ).expect("Error creating local store");
-
-    let test_bytes = TestData::roland();
-
-    store
-      .store_file_bytes(test_bytes.bytes(), false)
-      .wait()
-      .expect("Storing bytes");
-
-    let _fs = mount(mount_dir.path(), store).expect("Mounting");
-    let file_path = mount_dir
-      .path()
-      .join("digest")
-      .join(digest_to_filepath(&test_bytes.digest()));
-    assert_eq!(test_bytes.bytes(), file::contents(&file_path));
-    assert!(file::is_executable(&file_path));
+  fn install_handler<F>(install_fn: F, sig: Sig) -> impl StreamExt<Item = Option<Sig>>
+  where
+    F: Fn() -> SignalKind,
+  {
+    signal(install_fn())
+      .unwrap_or_else(|_| panic!("Failed to install SIG{:?} handler", sig))
+      .map(move |_| Some(sig))
   }
 
-  #[test]
-  fn list_directory() {
-    let store_dir = TempDir::new("store").unwrap();
-    let mount_dir = TempDir::new("mount").unwrap();
+  let sigint = install_handler(SignalKind::interrupt, Sig::INT);
+  let sigterm = install_handler(SignalKind::terminate, Sig::TERM);
 
-    let store = fs::Store::local_only(
-      store_dir.path(),
-      Arc::new(fs::ResettablePool::new("test-pool-".to_string())),
-    ).expect("Error creating local store");
-
-    let test_bytes = TestData::roland();
-    let test_directory = TestDirectory::containing_roland();
-
-    store
-      .store_file_bytes(test_bytes.bytes(), false)
-      .wait()
-      .expect("Storing bytes");
-    store
-      .record_directory(&test_directory.directory(), false)
-      .wait()
-      .expect("Storing directory");
-
-    let _fs = mount(mount_dir.path(), store).expect("Mounting");
-    let virtual_dir = mount_dir
-      .path()
-      .join("directory")
-      .join(digest_to_filepath(&test_directory.digest()));
-    assert_eq!(vec!["roland"], file::list_dir(&virtual_dir));
-  }
-
-  #[test]
-  fn read_file_from_directory() {
-    let store_dir = TempDir::new("store").unwrap();
-    let mount_dir = TempDir::new("mount").unwrap();
-
-    let store = fs::Store::local_only(
-      store_dir.path(),
-      Arc::new(fs::ResettablePool::new("test-pool-".to_string())),
-    ).expect("Error creating local store");
-
-    let test_bytes = TestData::roland();
-    let test_directory = TestDirectory::containing_roland();
-
-    store
-      .store_file_bytes(test_bytes.bytes(), false)
-      .wait()
-      .expect("Storing bytes");
-    store
-      .record_directory(&test_directory.directory(), false)
-      .wait()
-      .expect("Storing directory");
-
-    let _fs = mount(mount_dir.path(), store).expect("Mounting");
-    let roland = mount_dir
-      .path()
-      .join("directory")
-      .join(digest_to_filepath(&test_directory.digest()))
-      .join("roland");
-    assert_eq!(test_bytes.bytes(), file::contents(&roland));
-    assert!(!file::is_executable(&roland));
-  }
-
-  #[test]
-  fn list_recursive_directory() {
-    let store_dir = TempDir::new("store").unwrap();
-    let mount_dir = TempDir::new("mount").unwrap();
-
-    let store = fs::Store::local_only(
-      store_dir.path(),
-      Arc::new(fs::ResettablePool::new("test-pool-".to_string())),
-    ).expect("Error creating local store");
-
-    let test_bytes = TestData::roland();
-    let treat_bytes = TestData::catnip();
-    let test_directory = TestDirectory::containing_roland();
-    let recursive_directory = TestDirectory::recursive();
-
-    store
-      .store_file_bytes(test_bytes.bytes(), false)
-      .wait()
-      .expect("Storing bytes");
-    store
-      .store_file_bytes(treat_bytes.bytes(), false)
-      .wait()
-      .expect("Storing bytes");
-    store
-      .record_directory(&test_directory.directory(), false)
-      .wait()
-      .expect("Storing directory");
-    store
-      .record_directory(&recursive_directory.directory(), false)
-      .wait()
-      .expect("Storing directory");
-
-    let _fs = mount(mount_dir.path(), store).expect("Mounting");
-    let virtual_dir = mount_dir
-      .path()
-      .join("directory")
-      .join(digest_to_filepath(&recursive_directory.digest()));
-    assert_eq!(vec!["cats", "treats"], file::list_dir(&virtual_dir));
-    assert_eq!(vec!["roland"], file::list_dir(&virtual_dir.join("cats")));
-  }
-
-  #[test]
-  fn read_file_from_recursive_directory() {
-    let store_dir = TempDir::new("store").unwrap();
-    let mount_dir = TempDir::new("mount").unwrap();
-
-    let store = fs::Store::local_only(
-      store_dir.path(),
-      Arc::new(fs::ResettablePool::new("test-pool-".to_string())),
-    ).expect("Error creating local store");
-
-    let test_bytes = TestData::roland();
-    let treat_bytes = TestData::catnip();
-    let test_directory = TestDirectory::containing_roland();
-    let recursive_directory = TestDirectory::recursive();
-
-    store
-      .store_file_bytes(test_bytes.bytes(), false)
-      .wait()
-      .expect("Storing bytes");
-    store
-      .store_file_bytes(treat_bytes.bytes(), false)
-      .wait()
-      .expect("Storing bytes");
-    store
-      .record_directory(&test_directory.directory(), false)
-      .wait()
-      .expect("Storing directory");
-    store
-      .record_directory(&recursive_directory.directory(), false)
-      .wait()
-      .expect("Storing directory");
-
-    let _fs = mount(mount_dir.path(), store).expect("Mounting");
-    let virtual_dir = mount_dir
-      .path()
-      .join("directory")
-      .join(digest_to_filepath(&recursive_directory.digest()));
-    let treats = virtual_dir.join("treats");
-    assert_eq!(treat_bytes.bytes(), file::contents(&treats));
-    assert!(!file::is_executable(&treats));
-
-    let roland = virtual_dir.join("cats").join("roland");
-    assert_eq!(test_bytes.bytes(), file::contents(&roland));
-    assert!(!file::is_executable(&roland));
-  }
-
-  /* TODO: See https://github.com/pantsbuild/pants/issues/5813.
-  #[test]
-  fn files_are_correctly_executable() {
-    let store_dir = TempDir::new("store").unwrap();
-    let mount_dir = TempDir::new("mount").unwrap();
-
-    let store = fs::Store::local_only(
-      store_dir.path(),
-      Arc::new(fs::ResettablePool::new("test-pool-".to_string())),
-    ).expect("Error creating local store");
-
-    let treat_bytes = TestData::catnip();
-    let directory = TestDirectory::with_mixed_executable_files();
-
-    store
-      .store_file_bytes(treat_bytes.bytes(), false)
-      .wait()
-      .expect("Storing bytes");
-    store
-      .record_directory(&directory.directory(), false)
-      .wait()
-      .expect("Storing directory");
-
-    let _fs = mount(mount_dir.path(), store).expect("Mounting");
-    let virtual_dir = mount_dir
-      .path()
-      .join("directory")
-      .join(digest_to_filepath(&directory.digest()));
-    assert_eq!(vec!["feed", "food"], file::list_dir(&virtual_dir));
-    assert!(file::is_executable(&virtual_dir.join("feed")));
-    assert!(!file::is_executable(&virtual_dir.join("food")));
-  }
-  */
-
-  pub fn digest_to_filepath(digest: &hashing::Digest) -> String {
-    format!("{}-{}", digest.0, digest.1)
-  }
-}
-
-// TODO: Write a bunch more syscall-y tests to test that each syscall for each file/directory type
-// acts as we expect.
-#[cfg(test)]
-mod syscall_tests {
-  extern crate tempdir;
-  extern crate testutil;
-
-  use fs;
-  use futures::Future;
-  use libc;
-  use std::sync::Arc;
-  use super::mount;
-  use super::test::digest_to_filepath;
-  use self::tempdir::TempDir;
-  use self::testutil::data::TestData;
-  use std::ffi::CString;
-  use std::path::Path;
-
-  #[test]
-  fn read_file_by_digest_exact_bytes() {
-    let store_dir = TempDir::new("store").unwrap();
-    let mount_dir = TempDir::new("mount").unwrap();
-
-    let store = fs::Store::local_only(
-      store_dir.path(),
-      Arc::new(fs::ResettablePool::new("test-pool-".to_string())),
-    ).expect("Error creating local store");
-
-    let test_bytes = TestData::roland();
-
-    store
-      .store_file_bytes(test_bytes.bytes(), false)
-      .wait()
-      .expect("Storing bytes");
-
-    let _fs = mount(mount_dir.path(), store).expect("Mounting");
-
-    let path = mount_dir
-      .path()
-      .join("digest")
-      .join(digest_to_filepath(&test_bytes.digest()));
-
-    let mut buf = make_buffer(test_bytes.len());
-
-    unsafe {
-      let fd = libc::open(path_to_cstring(&path).as_ptr(), 0);
-      assert!(fd > 0, "Bad fd {}", fd);
-      let read_bytes = libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len());
-      assert_eq!(test_bytes.len() as isize, read_bytes);
-      assert_eq!(0, libc::close(fd));
+  match mount(mount_path, store, runtime.clone()) {
+    Err(err) => {
+      error!(
+        "Store {} failed to mount at {}: {}",
+        store_path, mount_path, err
+      );
+      std::process::exit(1);
     }
+    Ok((_, receiver)) => {
+      match receiver.recv().unwrap() {
+        BRFSEvent::INIT => debug!("Store {} mounted at {}", store_path, mount_path),
+        BRFSEvent::DESTROY => {
+          warn!("Externally unmounted before we could mount.");
+          return;
+        }
+      }
 
-    assert_eq!(test_bytes.string(), String::from_utf8(buf).unwrap());
-  }
+      let unmount = task::spawn_blocking(move || {
+        // N.B.: In practice recv always errs and we exercise the or branch. It seems the sender
+        // side thread always exits (which drops our BuildResultFS) before we get a chance to
+        // complete the read.
+        match receiver.recv().unwrap_or(BRFSEvent::DESTROY) {
+          BRFSEvent::DESTROY => Some(Sig::Unmount),
+          event => {
+            warn!("Received unexpected event {:?}", event);
+            None
+          }
+        }
+      })
+      .map(|res| res.unwrap())
+      .into_stream();
 
-  fn path_to_cstring(path: &Path) -> CString {
-    CString::new(path.to_string_lossy().as_bytes().to_owned()).unwrap()
-  }
-
-  fn make_buffer(size: usize) -> Vec<u8> {
-    let mut buf: Vec<u8> = Vec::new();
-    buf.resize(size, 0);
-    buf
+      let mut shutdown_signal = sigint.merge(sigterm).merge(unmount).filter_map(|x| x);
+      debug!("Awaiting shutdown signal ...");
+      if let Some(sig) = shutdown_signal.next().await {
+        match sig {
+          Sig::Unmount => debug!("Externally unmounted"),
+          sig => debug!("Received SIG{:?}", sig),
+        }
+      }
+    }
   }
 }
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+mod syscall_tests;

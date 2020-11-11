@@ -1,20 +1,6 @@
 # Copyright 2015 Pants project contributors (see CONTRIBUTORS.md).
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 
-
-python_tests(
-  name='cloc',
-  sources=['test_cloc.py'],
-  coverage=['pants.backend.graph_info.tasks.cloc'],
-  dependencies=[
-    'src/python/pants/backend/graph_info/tasks',
-    'src/python/pants/backend/jvm/targets:java',
-    'src/python/pants/backend/python/targets:python',
-    'src/python/pants/base:build_environment',
-    'tests/python/pants_test/tasks:task_test_base',
-  ]
-)
-
 python_tests(
   name = 'dependees',
   sources = ['test_dependees.py'],
@@ -24,10 +10,11 @@ python_tests(
     'src/python/pants/java/jar',
     'src/python/pants/backend/jvm/targets:java',
     'src/python/pants/backend/jvm/targets:jvm',
-    'src/python/pants/backend/python/targets:python',
+    'src/python/pants/backend/python/targets',
     'src/python/pants/build_graph',
-    'tests/python/pants_test/tasks:task_test_base',
-  ]
+    'src/python/pants/testutil:task_test_base',
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_tests(
@@ -35,10 +22,11 @@ python_tests(
   sources = ['test_filemap.py'],
   dependencies = [
     'src/python/pants/backend/graph_info/tasks',
-    'src/python/pants/backend/python/targets:python',
+    'src/python/pants/backend/python/targets',
     'src/python/pants/build_graph',
-    'tests/python/pants_test/tasks:task_test_base',
+    'src/python/pants/testutil:task_test_base',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_tests(
@@ -48,38 +36,12 @@ python_tests(
     'src/python/pants/backend/docgen/targets',
     'src/python/pants/backend/graph_info/tasks',
     'src/python/pants/backend/jvm/targets:java',
-    'src/python/pants/backend/python/targets:python',
+    'src/python/pants/backend/python/targets',
     'src/python/pants/base:exceptions',
     'src/python/pants/build_graph',
-    'tests/python/pants_test/tasks:task_test_base',
+    'src/python/pants/testutil:task_test_base',
   ],
-)
-
-python_tests(
-  name = 'listtargets',
-  sources = ['test_listtargets.py'],
-  dependencies = [
-    'src/python/pants/backend/graph_info/tasks',
-    'src/python/pants/backend/jvm:artifact',
-    'src/python/pants/backend/jvm/targets:java',
-    'src/python/pants/backend/jvm/targets:jvm',
-    'src/python/pants/build_graph',
-    'src/python/pants/backend/python/targets:python',
-    'tests/python/pants_test/subsystem:subsystem_utils',
-    'tests/python/pants_test/tasks:task_test_base',
-  ],
-)
-
-python_tests(
-  name = 'list_owners',
-  sources = ['test_list_owners.py'],
-  dependencies = [
-    'src/python/pants/backend/graph_info/tasks',
-    'src/python/pants/backend/python/targets:python',
-    'src/python/pants/base:exceptions',
-    'src/python/pants/build_graph',
-    'tests/python/pants_test/tasks:task_test_base',
-  ],
+  tags = {"partially_type_checked"},
 )
 
 python_tests(
@@ -87,10 +49,11 @@ python_tests(
   sources = ['test_minimal_cover.py'],
   dependencies = [
     'src/python/pants/backend/graph_info/tasks',
-    'src/python/pants/backend/python/targets:python',
+    'src/python/pants/backend/python/targets',
     'src/python/pants/build_graph',
-    'tests/python/pants_test/tasks:task_test_base',
+    'src/python/pants/testutil:task_test_base',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_tests(
@@ -99,28 +62,31 @@ python_tests(
   dependencies=[
     'src/python/pants/backend/graph_info/tasks',
     'src/python/pants/base:exceptions',
-    'tests/python/pants_test/tasks:task_test_base',
-  ]
+    'src/python/pants/testutil:task_test_base',
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_tests(
   name='paths_integration',
   sources=['test_paths_integration.py'],
   dependencies=[
-    'tests/python/pants_test:int-test',
+    'src/python/pants/testutil:int-test',
+    'testprojects/src/python:python_targets_directory',
   ],
-  tags = {'integration'},
+  tags = {'integration', 'partially_type_checked'},
 )
 
 python_tests(
-  name = 'sorttargets',
-  sources = ['test_sorttargets.py'],
+  name = 'sort_targets',
+  sources = ['test_sort_targets.py'],
   dependencies = [
     'src/python/pants/backend/graph_info/tasks',
-    'src/python/pants/backend/python/targets:python',
+    'src/python/pants/backend/python/targets',
     'src/python/pants/build_graph',
-    'tests/python/pants_test/tasks:task_test_base',
+    'src/python/pants/testutil:task_test_base',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_tests(
@@ -129,6 +95,7 @@ python_tests(
   dependencies=[
     'src/python/pants/backend/graph_info/tasks',
     'src/python/pants/build_graph',
-    'tests/python/pants_test/tasks:task_test_base',
-  ]
+    'src/python/pants/testutil:task_test_base',
+  ],
+  tags = {"partially_type_checked"},
 )

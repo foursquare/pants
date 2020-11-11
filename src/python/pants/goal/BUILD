@@ -7,6 +7,7 @@ python_library(
   dependencies = [
     ':goal',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -14,7 +15,8 @@ python_library(
   sources = ['aggregated_timings.py'],
   dependencies = [
     'src/python/pants/util:dirutil',
-  ]
+  ],
+  tags = {"partially_type_checked"},
 )
 
 # this is in goal because of run_tracker
@@ -24,7 +26,8 @@ python_library(
   dependencies = [
     'src/python/pants/cache',
     'src/python/pants/util:dirutil',
-  ]
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -34,19 +37,23 @@ python_library(
     ':products',
     ':workspace',
     'src/python/pants/base:build_environment',
-    'src/python/pants/build_graph', # XXX(fixme)
+    'src/python/pants/build_graph',
+    'src/python/pants/base:deprecated',
     'src/python/pants/base:worker_pool',
     'src/python/pants/base:workunit',
     'src/python/pants/java/distribution:distribution',
     'src/python/pants/process',
     'src/python/pants/reporting:report',
     'src/python/pants/source',
+    'src/python/pants/util:ordered_set',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
   name = 'error',
   sources = ['error.py'],
+  tags = {"partially_type_checked"},
 )
 
 # TODO(benjy): As a result of a renaming, we ended up with this target owning only one source
@@ -60,20 +67,24 @@ python_library(
     'src/python/pants/option',
     'src/python/pants/util:memo',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
   name = 'pantsd_stats',
   sources = ['pantsd_stats.py'],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
   name = 'products',
   sources = ['products.py'],
   dependencies = [
-    '3rdparty/python/twitter/commons:twitter.common.collections',
+    'src/python/pants/util:collections',
     'src/python/pants/util:dirutil',
+    'src/python/pants/util:ordered_set',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -84,16 +95,18 @@ python_library(
     ':artifact_cache_stats',
     ':pantsd_stats',
     '3rdparty/python:requests',
-    '3rdparty/python:pyopenssl',
+    'src/python/pants/auth',
     'src/python/pants/base:build_environment',
     'src/python/pants/base:run_info',
     'src/python/pants/base:worker_pool',
     'src/python/pants/base:workunit',
-    'src/python/pants/reporting', # XXX(fixme)
-    'src/python/pants/stats',
+    'src/python/pants/option',
+    'src/python/pants/reporting',
     'src/python/pants/subsystem',
     'src/python/pants/util:dirutil',
+    'src/python/pants/util:memo',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -102,6 +115,6 @@ python_library(
   dependencies = [
     'src/python/pants/base:build_environment',
     'src/python/pants/scm',
-    'src/python/pants/util:meta',
   ],
+  tags = {"partially_type_checked"},
 )

@@ -24,10 +24,11 @@ import org.pantsbuild.tools.junit.lib.XmlReportAssumeTest;
 import org.pantsbuild.tools.junit.lib.XmlReportFailInSetupTest;
 import org.pantsbuild.tools.junit.lib.XmlReportFailingParameterizedTest;
 import org.pantsbuild.tools.junit.lib.XmlReportFailingTestRunnerTest;
-import org.pantsbuild.tools.junit.lib.XmlReportFirstTestIngoredTest;
+import org.pantsbuild.tools.junit.lib.XmlReportFirstTestIgnoredTest;
 import org.pantsbuild.tools.junit.lib.XmlReportIgnoredTestSuiteTest;
 import org.pantsbuild.tools.junit.lib.XmlReportMockitoStubbingTest;
 import org.pantsbuild.tools.junit.lib.XmlReportTestSuite;
+import org.pantsbuild.tools.junit.lib.MockScalaTest;
 
 import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.not;
@@ -154,7 +155,7 @@ public class XmlReportTest extends ConsoleRunnerTestBase {
 
   @Test
   public void testXmlReportFirstTestIgnored() throws Exception {
-    String testClassName = XmlReportFirstTestIngoredTest.class.getCanonicalName();
+    String testClassName = XmlReportFirstTestIgnoredTest.class.getCanonicalName();
     AntJunitXmlReportListener.TestSuite testSuite = runTestAndParseXml(testClassName, false);
 
     assertNotNull(testSuite);
@@ -335,6 +336,27 @@ public class XmlReportTest extends ConsoleRunnerTestBase {
     assertEquals("java.lang.RuntimeException", testCase.getError().getType());
     assertThat(testCase.getError().getStacktrace(),
         containsString(FailingTestRunner.class.getCanonicalName() + ".getTestRules("));
+  }
+
+  @Test
+  public void testXmlReportOnScalaSuite() throws Exception {
+    String testClassName = MockScalaTest.class.getCanonicalName();
+    AntJunitXmlReportListener.TestSuite testSuite = runTestAndParseXml(testClassName, false);
+
+    assertNotNull(testSuite);
+    assertEquals(1, testSuite.getTests());
+    assertEquals(0, testSuite.getFailures());
+    assertEquals(0, testSuite.getErrors());
+    assertEquals(0, testSuite.getSkipped());
+    assertEquals(testClassName, testSuite.getName());
+
+    List<AntJunitXmlReportListener.TestCase> testCases = testSuite.getTestCases();
+    assertEquals(1, testCases.size());
+
+    AntJunitXmlReportListener.TestCase testCase = testCases.get(0);
+    assertEquals(testClassName, testCase.getClassname());
+    assertNull(testCase.getFailure());
+    assertNull(testCase.getError());
   }
 
   protected File runTestAndReturnXmlFile(String testClassName, boolean shouldFail)

@@ -1,20 +1,25 @@
-extern crate bytes;
-extern crate futures;
-extern crate grpcio;
-extern crate hashing;
-extern crate protobuf;
+// Copyright 2018 Pants project contributors (see CONTRIBUTORS.md).
+// Licensed under the Apache License, Version 2.0 (see LICENSE).
 
-pub mod bytestream;
-pub mod bytestream_grpc;
-pub mod code;
-pub mod empty;
-pub mod error_details;
-pub mod operations;
-pub mod operations_grpc;
-pub mod remote_execution;
-pub mod remote_execution_grpc;
-pub mod status;
+#![deny(unused_must_use)]
+
+#[macro_use]
+extern crate prost_derive;
+
+mod gen;
+pub use crate::gen::*;
+
+mod gen_for_tower;
+pub use crate::gen_for_tower::*;
 
 mod conversions;
+#[cfg(test)]
+mod conversions_tests;
+
+mod metadata;
+pub use metadata::call_option;
+
 mod verification;
-pub use verification::verify_directory_canonical;
+pub use crate::verification::verify_directory_canonical;
+#[cfg(test)]
+mod verification_tests;

@@ -1,68 +1,118 @@
-# coding=utf-8
 # Copyright 2017 Pants project contributors (see CONTRIBUTORS.md).
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 
-from __future__ import (absolute_import, division, generators, nested_scopes, print_function,
-                        unicode_literals, with_statement)
+from collections import OrderedDict
 
-from textwrap import dedent
-
-from pants.backend.native.register import rules as native_backend_rules
-from pants.backend.python.register import rules as python_backend_rules
 from pants.backend.python.targets.python_distribution import PythonDistribution
-from pants.backend.python.tasks.build_local_python_distributions import \
-  BuildLocalPythonDistributions
-from pants_test.backend.python.tasks.python_task_test_base import PythonTaskTestBase
-from pants_test.engine.scheduler_test_base import SchedulerTestBase
+from pants.backend.python.targets.python_requirement_library import PythonRequirementLibrary
+from pants.python.python_requirement import PythonRequirement
+from pants_test.backend.python.tasks.util.build_local_dists_test_base import (
+    BuildLocalPythonDistributionsTestBase,
+)
 
 
-class TestBuildLocalPythonDistributions(PythonTaskTestBase, SchedulerTestBase):
-  @classmethod
-  def task_type(cls):
-    return BuildLocalPythonDistributions
+class TestBuildLocalPythonDistributions(BuildLocalPythonDistributionsTestBase):
 
-  def setUp(self):
-    super(TestBuildLocalPythonDistributions, self).setUp()
+    dist_specs = OrderedDict(
+        [
+            (
+                "src/python/dist:universal_dist",
+                {
+                    "key": "universal",
+                    "target_type": PythonDistribution,
+                    "sources": ["__init__.py", "setup.py"],
+                    "filemap": {
+                        "__init__.py": "",
+                        "setup.py": """\
+from setuptools import find_packages, setup
+setup(
+  name='universal_dist',
+  version='0.0.0',
+  packages=find_packages()
+)
+        """,
+                    },
+                },
+            ),
+            (
+                "3rdparty/python:pycountry",
+                {
+                    "key": "pycountry",
+                    "target_type": PythonRequirementLibrary,
+                    "requirements": [PythonRequirement("pycountry==18.5.20")],
+                },
+            ),
+            (
+                "src/python/setup_requires:setup_requires",
+                {
+                    "key": "setup_requires",
+                    "target_type": PythonDistribution,
+                    "setup_requires": ["3rdparty/python:pycountry"],
+                    "sources": ["__init__.py", "setup.py"],
+                    "filemap": {
+                        "__init__.py": "",
+                        "setup.py": """\
+from setuptools import find_packages, setup
+import pycountry
 
-    # Setup simple python_dist target
-    sources = ['foo.py', 'bar.py', '__init__.py', 'setup.py']
-    self.filemap = {
-      'src/python/dist/__init__.py': '',
-      'src/python/dist/foo.py': 'print("foo")',
-      'src/python/dist/bar.py': 'print("bar")',
-      'src/python/dist/setup.py': dedent("""
-        from setuptools import setup, find_packages
-        setup(
-          name='my_dist',
-          version='0.0.0',
-          packages=find_packages()
-        )
-      """)
-    }
-    for rel_path, content in self.filemap.items():
-      self.create_file(rel_path, content)
+us_country_string = pycountry.countries.get(alpha_2='US').name.replace(' ', '_').lower()
 
-    self.python_dist_tgt = self.make_target(spec='src/python/dist:my_dist',
-                                            target_type=PythonDistribution,
-                                            sources=sources)
+setup(
+  name='setup_requires_dist_{}'.format(us_country_string),
+  version='0.0.0',
+  packages=find_packages(),
+)
+        """,
+                    },
+                },
+            ),
+            (
+                "src/python/install_requires:install_requires",
+                {
+                    "key": "install_requires",
+                    "target_type": PythonDistribution,
+                    "sources": ["__init__.py", "setup.py"],
+                    "filemap": {
+                        "__init__.py": "",
+                        "setup.py": """\
+from setuptools import setup
 
-  def _scheduling_context(self, **kwargs):
-    rules = (
-      native_backend_rules() +
-      python_backend_rules()
+setup(
+  name='install_requires_dist',
+  version='0.0.0',
+  install_requires=['pycountry==17.1.2'],
+)
+        """,
+                    },
+                },
+            ),
+        ]
     )
-    scheduler = self.mk_scheduler(rules=rules)
-    return self.context(scheduler=scheduler, **kwargs)
 
-  def test_python_create_distributions(self):
-    context = self._scheduling_context(
-      target_roots=[self.python_dist_tgt],
-      for_task_types=[BuildLocalPythonDistributions])
-    self.assertEquals([self.python_dist_tgt], context.build_graph.targets())
-    python_create_distributions_task = self.create_task(context)
-    python_create_distributions_task.execute()
-    synthetic_tgts = set(context.build_graph.targets()) - {self.python_dist_tgt}
-    self.assertEquals(1, len(synthetic_tgts))
-    synthetic_target = next(iter(synthetic_tgts))
-    self.assertEquals(['my_dist==0.0.0'],
-                      [str(x.requirement) for x in synthetic_target.requirements.value])
+    def test_create_distribution(self):
+        universal_dist = self.target_dict["universal"]
+        self._assert_dist_and_wheel_identity(
+            expected_name="universal_dist",
+            expected_version="0.0.0",
+            expected_platform=self.ExpectedPlatformType.any,
+            dist_target=universal_dist,
+        )
+
+    def test_python_dist_setup_requires(self):
+        setup_requires_dist = self.target_dict["setup_requires"]
+        self._assert_dist_and_wheel_identity(
+            expected_name="setup_requires_dist_united_states",
+            expected_version="0.0.0",
+            expected_platform=self.ExpectedPlatformType.any,
+            dist_target=setup_requires_dist,
+            extra_targets=[self.target_dict["pycountry"]],
+        )
+
+    def test_install_requires(self):
+        install_requires_dist = self.target_dict["install_requires"]
+        self._assert_dist_and_wheel_identity(
+            expected_name="install_requires_dist",
+            expected_version="0.0.0",
+            expected_platform=self.ExpectedPlatformType.any,
+            dist_target=install_requires_dist,
+        )

@@ -5,8 +5,8 @@ python_library(
   sources = ['scm.py'],
   dependencies = [
     'src/python/pants/util:contextutil',
-    'src/python/pants/util:meta',
   ],
+  tags = {'partially_type_checked'},
 )
 
 python_library(
@@ -16,17 +16,7 @@ python_library(
     ':scm',
     'src/python/pants/util:contextutil',
     'src/python/pants/util:memo',
-    'src/python/pants/util:process_handler',
     'src/python/pants/util:strutil',
   ],
-)
-
-python_library(
-  name = 'change_calculator',
-  sources = ['change_calculator.py'],
-  dependencies = [
-    'src/python/pants/base:specs',
-    'src/python/pants/build_graph',
-    'src/python/pants/goal:workspace',
-  ],
+  tags = {'partially_type_checked'},
 )

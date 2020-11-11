@@ -2,51 +2,96 @@
 # Copyright 2014 Pants project contributors (see CONTRIBUTORS.md).
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 
-REPO_ROOT=$(cd $(dirname "${BASH_SOURCE[0]}") && cd .. && pwd -P)
-source ${REPO_ROOT}/build-support/common.sh
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd -P)
+
+# shellcheck source=build-support/common.sh
+source "${REPO_ROOT}/build-support/common.sh"
 
 REQUIREMENTS=(
-  ${REPO_ROOT}/3rdparty/python/requirements.txt
-  ${REPO_ROOT}/3rdparty/python/twitter/commons/requirements.txt
-  ${REPO_ROOT}/pants-plugins/3rdparty/python/requirements.txt
+  "${REPO_ROOT}/3rdparty/python/requirements.txt"
+  "${REPO_ROOT}/3rdparty/python/twitter/commons/requirements.txt"
+  "${REPO_ROOT}/pants-plugins/3rdparty/python/requirements.txt"
 )
 
+venv_dir_prefix="${REPO_ROOT}/build-support/virtualenvs/$(uname)/pants_dev_deps"
+
 function venv_dir() {
-  echo ${REPO_ROOT}/build-support/pants_dev_deps.venv
+  py_venv_version=$(${PY} -c 'import sys; print("".join(map(str, sys.version_info[0:2])))')
+  echo "${venv_dir_prefix}.py${py_venv_version}.venv"
 }
 
 function activate_venv() {
+  # Because the venv/bin/activate script's location is dynamic and not located in a fixed
+  # place, Shellcheck will not be able to find it so we tell Shellcheck to ignore the file.
+  # shellcheck source=/dev/null
   source "$(venv_dir)/bin/activate"
 }
 
-function create_venv() {
+function remove_venv() {
   rm -rf "$(venv_dir)"
+  # Also remove legacy folders.
+  rm -rf "${venv_dir_prefix}.venv" "${venv_dir_prefix}.py{2,3}.venv"
+}
+
+function create_venv() {
+  remove_venv
   "${REPO_ROOT}/build-support/virtualenv" "$(venv_dir)"
 }
 
+function ensure_gcc() {
+  if ! GCC_VERSION="$(gcc -v 2>&1)"; then
+    die "$(cat << MESSAGE
+ERROR: unable to execute 'gcc'. Please verify that your compiler is installed, in your
+       \$PATH and functional.
+
+Hint: on Mac OS X, you may need to accept the XCode EULA: 'sudo xcodebuild -license accept'.
+MESSAGE
+)"
+  fi
+  # Prevent bootstrapping failure due to unrecognized flag:
+  # https://github.com/pantsbuild/pants/issues/78
+  if [[ "$GCC_VERSION" == *503.0.38* ]]; then
+    # Required for clang version 503.0.38
+    export ARCHFLAGS=-Wno-error=unused-command-line-argument-hard-error-in-future
+  fi
+}
+
 function activate_pants_venv() {
+  # Allow for multiple calls to `activate_pants_venv`.
+  if [ -n "$VENV_ACTIVATED_FOR_PANTS" ]; then
+    return
+  else
+    export VENV_ACTIVATED_FOR_PANTS="true"
+  fi
+
   fingerprint=""
-  for req in ${REQUIREMENTS[@]}; do
-    fingerprint="${fingerprint}$(cat ${req} | fingerprint_data)"
+  for req in "${REQUIREMENTS[@]}"; do
+    fingerprint="${fingerprint}$(fingerprint_data < "${req}")"
   done
   fingerprint=$(echo "${fingerprint}" | fingerprint_data)
 
   BOOTSTRAPPED_FILE="$(venv_dir)/BOOTSTRAPPED.${fingerprint}"
 
-  if ! [ -f ${BOOTSTRAPPED_FILE} ]; then
+  if ! [ -f "${BOOTSTRAPPED_FILE}" ]; then
     log "Bootstrapping pants_deps with requirements:"
-    # Use -f ${REPO_ROOT}/third_party if patching in local dependencies like so
-    # pip_extra="-f ${REPO_ROOT}/third_party"
-    pip_extra=""
+    # Use -f ${REPO_ROOT}/third_party if patching in local dependencies like so:
+    #
+    #   pip_extra=(-f "${REPO_ROOT}/third_party")
+    #
+    pip_extra=()
 
-    for req in ${REQUIREMENTS[@]}; do
+    for req in "${REQUIREMENTS[@]}"; do
       log "  ${req}"
     done
 
     create_venv || die "Failed to create venv."
     activate_venv || die "Failed to activate venv."
-    for req in ${REQUIREMENTS[@]}; do
-      pip install ${pip_extra} -r "${req}" || \
+
+    # Needed for compilation of native python distributions.
+    ensure_gcc
+
+    for req in "${REQUIREMENTS[@]}"; do
+      pip install "${pip_extra[@]}" -r "${req}" || \
         die "Failed to install requirements from ${req}."
     done
     touch "${BOOTSTRAPPED_FILE}"

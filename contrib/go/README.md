@@ -6,20 +6,20 @@ tooling easier.
 
 ## Installation
 
-Go support is provided by a plugin distributed to 
-[pypi](https://pypi.python.org/pypi/pantsbuild.pants.contrib.go).
+Go support is provided by a plugin distributed to
+[pypi](https://pypi.org/pypi/pantsbuild.pants.contrib.go).
 Assuming you have already [installed pants](http://www.pantsbuild.org/install.html), you'll need to
-add the Go plugin in your `pants.ini`, like so:
-```ini
+add the Go plugin in your `pants.toml`, like so:
+```toml
 [GLOBAL]
-pants_version: 1.0.0
+pants_version = "1.26.0"
 
-plugins: [
-    'pantsbuild.pants.contrib.go==%(pants_version)s',
-  ]
+plugins = [
+  'pantsbuild.pants.contrib.go==%(pants_version)s',
+]
 
 [go-distribution]
-version: 1.10
+version = "1.10"
 ```
 
 On your next run of `./pants` the plugin will be installed and you'll find these new goals:
@@ -57,27 +57,25 @@ some configuration and seeding to work.
 ### Source root configuration
 
 Internally, pants uses the concept of a "source root" to determine the portion of a source file's
-path that represents the package for the language in question. 
+path that represents the package for the language in question.
 
 Pants attempts to guess where your source roots are via pattern matching.  For example, it assumes
-by default that `src/*` and `src/main/*`, where `*` is some language name, are possible source 
-roots for that language. 
+by default that `src/*` and `src/main/*`, where `*` is some language name, are possible source
+roots for that language.
 
-However when it comes to Go, `src/go` is probably not the correct source root. For Go code in a 
-standard multi-language repo layout, `src/go` is probably on the $GOPATH, which means that 
-`src/go/src` is the actual source root. 
+However when it comes to Go, `src/go` is probably not the correct source root. For Go code in a
+standard multi-language repo layout, `src/go` is probably on the $GOPATH, which means that
+`src/go/src` is the actual source root.
 
 Pants corrects for this in the case of its default patterns: It will correctly detect
-that `src/go/src` and `src/main/go/src` are the possible source roots for Go. 
+that `src/go/src` and `src/main/go/src` are the possible source roots for Go.
 
 But if your Go code does not live in one of these locations then you'll need to tell Pants where
-to find it, e.g., by adding this to `pants.ini`:
+to find it, e.g., by adding this to `pants.toml`:
 
-```ini
+```toml
 [source]
-source_roots: {
-    'my/custom/path/go/src': ['go']
-  }
+source_roots = "{'my/custom/path/go/src': ['go']}"
 ```
 
 This tells pants that the `src/go/src` source root houses one type of code, Go code.
@@ -175,7 +173,7 @@ index 5d283d4..38ed297 100644
 +go_remote_library(rev='v1.1')
 ```
 Here we've used the `v1.1` tag of the `github.com/gorilla/mux` project, but we could also use a sha
-or branch name (not reccomended since branches can float).
+or branch name (not recommended since branches can float).
 
 Re-running buildgen finds success:
 ```
@@ -248,16 +246,16 @@ At this point the generated BUILD files can be checked in.
 
 When new packages are added or existing packages' dependencies are modified a similar seeding (only
 needed if the packages are new roots), buildgen and compilation can be cycled through. To simplify
-the process it's recommended the flags be made defaults for the repo by editing your pants init to
+the process it's recommended the flags be made defaults for the repo by editing your `pants.toml` to
 include the following section:
-```ini
+```toml
 [buildgen.go]
 # We always want buildgen to materialize BUILD files on disk as well as handle seeding remotes
 # when new ones are encountered.  We also never want to allow FLOATING revs, they should be pinned
 # right away.
-materialize: True
-remote: True
-fail_floating: True
+materialize = true
+remote = true
+fail_floating = true
 ```
 Now running buildgen is just `./pants buildgen`.
 
@@ -275,9 +273,66 @@ default.
 
 ## Testing
 
-You can run your Go tests with `./pants test [go targets]`. Any 
-[standard Go tests](https://golang.org/pkg/testing/) found amongst the targets will be compiled and 
+You can run your Go tests with `./pants test [go targets]`. Any
+[standard Go tests](https://golang.org/pkg/testing/) found amongst the targets will be compiled and
 run with output sent to the console.
+
+## Protocol Buffers
+
+Pants integrates [Go support for protocol buffers](https://github.com/golang/protobuf) with the
+`go_protobuf_library` target.
+
+Go targets may depend on a `go_protobuf_library` targets as if it were a `go_library` target.
+Behind the scenes, Pants will generate Go code from the protobuf sources and exposes it as if it
+were a regular Go library.
+
+For example,
+[`contrib/go/examples/src/protobuf/org/pantsbuild/example/route/BUILD`](https://github.com/pantsbuild/pants/blob/master/contrib/go/examples/src/protobuf/org/pantsbuild/example/route/BUILD)
+defines a `go_protobuf_library` target. Notice how it depends on another `go_protobuf_library`
+to satisfy imports in the IDL file.
+
+!inc[start-at=go_protobuf_library](examples/src/protobuf/org/pantsbuild/example/route/BUILD)
+
+[`contrib/go/examples/src/go/distance/BUILD`](https://github.com/pantsbuild/pants/blob/master/contrib/go/examples/src/go/distance/BUILD)
+depends on the `go_protobuf_library`, which transitively depends on another protobuf library.
+
+!inc[start-at=go_binary](examples/src/go/distance/BUILD)
+
+In Go, we can import and use the protobuf generated code as it were regular Go code.
+
+!inc[start-at=main](examples/src/go/distance/main.go)
+
+To select the version of the go protobuf runtime your generated code depends on, set option `import_target`
+in scope `gen.go-protobuf` to point to an appropriate target address. E.g.,
+
+```toml
+[gen.go-protobuf]
+import_target = "3rdparty/go/github.com/golang/protobuf/proto"
+```
+
+(Where 3rdparty/go/github.com/golang/protobuf/proto was presumably created by the buildgen process
+described above.)
+
+## gRPC
+
+Pants supports the proto compiler's gRPC plugin. You can activate it for a single `go_protobuf_library`
+by adding  the `protoc_plugins=['grpc']` argument. See, e.g.,
+[`contrib/go/examples/src/protobuf/org/pantsbuild/example/grpc/BUILD`](https://github.com/pantsbuild/pants/blob/master/contrib/go/examples/src/protobuf/org/pantsbuild/example/grpc/BUILD)
+
+You can also activate it for all `go_protobuf_library` targets in your repo, using the `protoc_plugins`
+option in scope `gen.go-protobuf`. E.g., add this to your `pants.toml`:
+
+```toml
+[gen.go-protobuf]
+protoc_plugins = ["grpc"]
+import_target = "src/protobuf:grpc-deps"
+```
+
+Note that we also modify `import_target`, as your code must now depend on the gRPC runtime.
+See, e.g.,
+[`contrib/go/examples/src/protobuf/org/pantsbuild/example/BUILD`](https://github.com/pantsbuild/pants/blob/master/contrib/go/examples/src/protobuf/org/pantsbuild/example/BUILD)
+
+Note that you can activate other plugins, should any become available, in a similar fashion.
 
 ## Working with other Go ecosystem tools
 
@@ -285,7 +340,7 @@ Go and the Go ecosystem provide rich tool support. From native Go tools like `go
 to editors like `vim` and [Sublime](https://www.sublimetext.com/) that have plugins supporting Go
 symbol resolution and more. These tools all rely on a `GOROOT` and a `GOPATH` to know where to find
 binaries and code to operate against. Since pants controls the Go workspace these tools are
-unuseable without knowledge of the Pants-synthesized workspaces.  The `./pants go` and
+unusable without knowledge of the Pants-synthesized workspaces.  The `./pants go` and
 `./pants go-env` goals can help use or integrate with these tools.
 
 ### go

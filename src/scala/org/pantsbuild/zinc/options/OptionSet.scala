@@ -7,6 +7,10 @@ package org.pantsbuild.zinc.options
 
 import java.io.File
 
+///
+/// TODO Remove uses of this in favor of scopt
+/// A reference way to do this is described in #6487
+///
 trait OptionSet[T] {
   /** An empty set of options. */
   def empty: T
@@ -58,6 +62,7 @@ trait OptionSet[T] {
   def boolean(opts: (String, String), desc: String, action: T => T) = new BooleanOption[T](Seq(opts._1, opts._2), desc, action)
   def string(opt: String, arg: String, desc: String, action: (T, String) => T) = new StringOption[T](Seq(opt), arg, desc, action)
   def int(opt: String, arg: String, desc: String, action: (T, Int) => T) = new IntOption[T](Seq(opt), arg, desc, action)
+  def long(opt: String, arg: String, desc: String, action: (T, Long) => T) = new LongOption[T](Seq(opt), arg, desc, action)
   def double(opt: String, arg: String, desc: String, action: (T, Double) => T) = new DoubleOption[T](Seq(opt), arg, desc, action)
   def fraction(opt: String, arg: String, desc: String, action: (T, Double) => T) = new FractionOption[T](Seq(opt), arg, desc, action)
   def file(opt: String, arg: String, desc: String, action: (T, File) => T) = new FileOption[T](Seq(opt), arg, desc, action)

@@ -3,17 +3,10 @@
 
 python_binary(
   name = 'reversion',
-  source = 'reversion.py',
+  sources = ['reversion.py'],
   dependencies = [
     'src/python/pants/util:contextutil',
+    'src/python/pants/util:dirutil',
   ],
-)
-
-python_binary(
-  name = 'packages',
-  source = 'packages.py',
-  dependencies = [
-    '3rdparty/python:beautifulsoup4',
-    'src/python/pants/util:process_handler',
-  ],
+  tags = {"partially_type_checked"},
 )

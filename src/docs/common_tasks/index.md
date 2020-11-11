@@ -11,14 +11,16 @@ This section of the Pants documentation describes the most common day-to-day Pan
 * [[Get an Overview of Your Recent Pants Activity|pants('src/docs/common_tasks:server')]]
 * [[Add a Dependency on Another Target|pants('src/docs/common_tasks:dependencies')]]
 * [[Create an Alias for a Target|pants('src/docs/common_tasks:alias')]]
+* [[Create a Target Aggregate|pants('src/docs/common_tasks:target_aggregate')]]
 * [[Pass Command-line Arguments to an Executable|pants('src/docs/common_tasks:cli_args')]]
 * [[Clean Cached Pants Artifacts|pants('src/docs/common_tasks:clean')]]
 * [[Run a Binary Target|pants('src/docs/common_tasks:run')]]
 * [[Create a Bundled zip or Other Archive|pants('src/docs/common_tasks:bundle')]]
 * [[Create a Resource Bundle|pants('src/docs/common_tasks:resources')]]
-* [[Use globs and rglobs to Group Files|pants('src/docs/common_tasks:globs')]]
+* [[Use globs to group files|pants('src/docs/common_tasks:globs')]]
 * [[Access a REPL for a Target|pants('src/docs/common_tasks:repl')]]
 * [[Generate Code from Thrift Definitions|pants('src/docs/common_tasks:thrift_gen')]]
+* [[Authenticate to a Server|pants('src/docs/common_tasks:login')]]
 
 ### Scala and Java
 
@@ -28,6 +30,7 @@ This section of the Pants documentation describes the most common day-to-day Pan
 * [[Specify a File Bundle|pants('src/docs/common_tasks:file_bundles')]]
 * [[Specify JVM Options|pants('src/docs/common_tasks:jvm_options')]]
 * [[Define a Test Suite for Scala or Java|pants('src/docs/common_tasks:jvm_tests')]]
+* [[Run JVM binaries and tests with different JVM versions|pants('src/docs/common_tasks:multiple_jvm_versions')]]
 
 ### Python
 

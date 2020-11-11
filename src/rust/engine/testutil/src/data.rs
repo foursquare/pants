@@ -1,10 +1,8 @@
-use bazel_protos;
-use bytes;
 use digest::FixedOutput;
-use hashing;
 use protobuf::Message;
 use sha2::{self, Digest};
 
+#[derive(Clone)]
 pub struct TestData {
   string: String,
 }
@@ -22,7 +20,11 @@ impl TestData {
     TestData::new("catnip")
   }
 
-  pub fn fourty_chars() -> TestData {
+  pub fn robin() -> TestData {
+    TestData::new("Pug")
+  }
+
+  pub fn forty_chars() -> TestData {
     TestData::new(
       "0123456789012345678901234567890123456789\
        0123456789012345678901234567890123456789",
@@ -57,7 +59,7 @@ impl TestData {
 }
 
 pub struct TestDirectory {
-  directory: bazel_protos::remote_execution::Directory,
+  pub directory: bazel_protos::remote_execution::Directory,
 }
 
 impl TestDirectory {
@@ -69,6 +71,56 @@ impl TestDirectory {
 
   // Directory structure:
   //
+  // /falcons/
+  pub fn containing_falcons_dir() -> TestDirectory {
+    let mut directory = bazel_protos::remote_execution::Directory::new();
+    directory.mut_directories().push({
+      let mut subdir = bazel_protos::remote_execution::DirectoryNode::new();
+      subdir.set_name("falcons".to_string());
+      subdir.set_digest((&TestDirectory::empty().digest()).into());
+      subdir
+    });
+    TestDirectory { directory }
+  }
+
+  // Directory structure:
+  //
+  // birds/falcons/
+  // cats/roland
+  pub fn nested_dir_and_file() -> TestDirectory {
+    let mut directory = bazel_protos::remote_execution::Directory::new();
+    directory.mut_directories().push({
+      let mut subdir = bazel_protos::remote_execution::DirectoryNode::new();
+      subdir.set_name("birds".to_string());
+      subdir.set_digest((&TestDirectory::containing_falcons_dir().digest()).into());
+      subdir
+    });
+    directory.mut_directories().push({
+      let mut subdir = bazel_protos::remote_execution::DirectoryNode::new();
+      subdir.set_name("cats".to_string());
+      subdir.set_digest((&TestDirectory::containing_roland().digest()).into());
+      subdir
+    });
+    TestDirectory { directory }
+  }
+
+  // Directory structure:
+  //
+  // animals/birds/falcons/
+  // animals/cats/roland
+  pub fn double_nested_dir_and_file() -> TestDirectory {
+    let mut directory = bazel_protos::remote_execution::Directory::new();
+    directory.mut_directories().push({
+      let mut subdir = bazel_protos::remote_execution::DirectoryNode::new();
+      subdir.set_name("animals".to_string());
+      subdir.set_digest((&TestDirectory::nested_dir_and_file().digest()).into());
+      subdir
+    });
+    TestDirectory { directory }
+  }
+
+  // Directory structure:
+  //
   // /roland
   pub fn containing_roland() -> TestDirectory {
     let mut directory = bazel_protos::remote_execution::Directory::new();
@@ -76,6 +128,36 @@ impl TestDirectory {
       let mut file = bazel_protos::remote_execution::FileNode::new();
       file.set_name("roland".to_owned());
       file.set_digest((&TestData::roland().digest()).into());
+      file.set_is_executable(false);
+      file
+    });
+    TestDirectory { directory }
+  }
+
+  // Directory structure:
+  //
+  // /robin
+  pub fn containing_robin() -> TestDirectory {
+    let mut directory = bazel_protos::remote_execution::Directory::new();
+    directory.mut_files().push({
+      let mut file = bazel_protos::remote_execution::FileNode::new();
+      file.set_name("robin".to_owned());
+      file.set_digest((&TestData::robin().digest()).into());
+      file.set_is_executable(false);
+      file
+    });
+    TestDirectory { directory }
+  }
+
+  // Directory structure:
+  //
+  // /treats
+  pub fn containing_treats() -> TestDirectory {
+    let mut directory = bazel_protos::remote_execution::Directory::new();
+    directory.mut_files().push({
+      let mut file = bazel_protos::remote_execution::FileNode::new();
+      file.set_name("treats".to_owned());
+      file.set_digest((&TestData::catnip().digest()).into());
       file.set_is_executable(false);
       file
     });
@@ -98,6 +180,20 @@ impl TestDirectory {
 
   // Directory structure:
   //
+  // /pets/cats/roland
+  pub fn double_nested() -> TestDirectory {
+    let mut directory = bazel_protos::remote_execution::Directory::new();
+    directory.mut_directories().push({
+      let mut subdir = bazel_protos::remote_execution::DirectoryNode::new();
+      subdir.set_name("pets".to_string());
+      subdir.set_digest((&TestDirectory::nested().digest()).into());
+      subdir
+    });
+    TestDirectory { directory }
+  }
+
+  // Directory structure:
+  //
   // /dnalor
   pub fn containing_dnalor() -> TestDirectory {
     let mut directory = bazel_protos::remote_execution::Directory::new();
@@ -105,6 +201,44 @@ impl TestDirectory {
       let mut file = bazel_protos::remote_execution::FileNode::new();
       file.set_name("dnalor".to_owned());
       file.set_digest((&TestData::roland().digest()).into());
+      file.set_is_executable(false);
+      file
+    });
+    TestDirectory { directory }
+  }
+
+  // Directory structure:
+  //
+  // /roland
+  pub fn containing_wrong_roland() -> TestDirectory {
+    let mut directory = bazel_protos::remote_execution::Directory::new();
+    directory.mut_files().push({
+      let mut file = bazel_protos::remote_execution::FileNode::new();
+      file.set_name("roland".to_owned());
+      file.set_digest((&TestData::catnip().digest()).into());
+      file.set_is_executable(false);
+      file
+    });
+    TestDirectory { directory }
+  }
+
+  // Directory structure:
+  //
+  // /roland
+  // /treats
+  pub fn containing_roland_and_treats() -> TestDirectory {
+    let mut directory = bazel_protos::remote_execution::Directory::new();
+    directory.mut_files().push({
+      let mut file = bazel_protos::remote_execution::FileNode::new();
+      file.set_name("roland".to_owned());
+      file.set_digest((&TestData::roland().digest()).into());
+      file.set_is_executable(false);
+      file
+    });
+    directory.mut_files().push({
+      let mut file = bazel_protos::remote_execution::FileNode::new();
+      file.set_name("treats".to_owned());
+      file.set_digest((&TestData::catnip().digest()).into());
       file.set_is_executable(false);
       file
     });

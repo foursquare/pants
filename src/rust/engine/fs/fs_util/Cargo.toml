@@ -1,15 +1,26 @@
 [package]
 name = "fs_util"
 version = "0.0.1"
+edition = "2018"
 authors = [ "Pants Build <pantsbuild@gmail.com>" ]
+publish = false
 
 [dependencies]
-bazel_protos = { path = "../../process_execution/bazel_protos" }
 boxfuture = { path = "../../boxfuture" }
 bytes = "0.4.5"
 clap = "2"
 env_logger = "0.5.4"
 fs = { path = ".." }
-futures = "0.1.16"
+futures01 = { package = "futures", version = "0.1" }
+futures = { version = "0.3", features = ["compat"] }
 hashing = { path = "../../hashing" }
-protobuf = { version = "1.4.1", features = ["with-bytes"] }
+parking_lot = "0.6"
+protobuf = { version = "2.0.6", features = ["with-bytes"] }
+rand = "0.6"
+serde = "1.0"
+serde_json = "1.0"
+serde_derive = "1.0"
+store = { path = "../store" }
+task_executor = { path = "../../task_executor" }
+tokio = { version = "0.2", features = ["rt-threaded", "macros"] }
+workunit_store = { path = "../../workunit_store" }

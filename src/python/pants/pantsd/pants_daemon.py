@@ -1,410 +1,326 @@
-# coding=utf-8
 # Copyright 2015 Pants project contributors (see CONTRIBUTORS.md).
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
-
-from __future__ import (absolute_import, division, generators, nested_scopes, print_function,
-                        unicode_literals, with_statement)
 
 import logging
 import os
 import sys
-import threading
+import time
 from contextlib import contextmanager
+from typing import IO, Any, Iterator
 
 from setproctitle import setproctitle as set_process_title
 
 from pants.base.build_environment import get_buildroot
-from pants.base.exiter import Exiter
-from pants.bin.daemon_pants_runner import DaemonExiter, DaemonPantsRunner
-from pants.bin.engine_initializer import EngineInitializer
-from pants.engine.native import Native
-from pants.init.target_roots_calculator import TargetRootsCalculator
-from pants.logging.setup import setup_logging
-from pants.option.arg_splitter import GLOBAL_SCOPE
+from pants.base.exception_sink import ExceptionSink
+from pants.bin.daemon_pants_runner import DaemonPantsRunner
+from pants.engine.internals.native import Native
+from pants.init.engine_initializer import LegacyGraphScheduler
+from pants.init.logging import clear_logging_handlers, init_rust_logger, setup_logging_to_file
+from pants.init.options_initializer import OptionsInitializer
+from pants.option.option_value_container import OptionValueContainer
+from pants.option.options import Options
 from pants.option.options_bootstrapper import OptionsBootstrapper
-from pants.option.options_fingerprinter import OptionsFingerprinter
-from pants.pantsd.process_manager import FingerprintedProcessManager
+from pants.pantsd.pants_daemon_core import PantsDaemonCore
+from pants.pantsd.process_manager import PantsDaemonProcessManager
 from pants.pantsd.service.fs_event_service import FSEventService
-from pants.pantsd.service.pailgun_service import PailgunService
+from pants.pantsd.service.pants_service import PantsServices
 from pants.pantsd.service.scheduler_service import SchedulerService
 from pants.pantsd.service.store_gc_service import StoreGCService
 from pants.pantsd.watchman_launcher import WatchmanLauncher
-from pants.util.collections import combined_dict
 from pants.util.contextutil import stdio_as
-from pants.util.memo import memoized_property
+from pants.util.logging import LogLevel
+from pants.util.strutil import ensure_text
 
 
 class _LoggerStream(object):
-  """A sys.{stdout,stderr} replacement that pipes output to a logger."""
+    """A sys.std{out,err} replacement that pipes output to a logger.
 
-  def __init__(self, logger, log_level, handler):
+    N.B. `logging.Logger` expects unicode. However, most of our outstream logic, such as in
+    `exiter.py`, will use `sys.std{out,err}.buffer` and thus a bytes interface. So, we must provide
+    a `buffer` property, and change the semantics of the buffer to always convert the message to
+    unicode. This is an unfortunate code smell, as `logging` does not expose a bytes interface so
+    this is the best solution we could think of.
     """
-    :param logging.Logger logger: The logger instance to emit writes to.
-    :param int log_level: The log level to use for the given logger.
-    :param Handler handler: The underlying log handler, for determining the fileno
-                            to support faulthandler logging.
-    """
-    self._logger = logger
-    self._log_level = log_level
-    self._handler = handler
 
-  def write(self, msg):
-    for line in msg.rstrip().splitlines():
-      self._logger.log(self._log_level, line.rstrip())
+    def __init__(self, logger, log_level, handler):
+        """
+        :param logging.Logger logger: The logger instance to emit writes to.
+        :param int log_level: The log level to use for the given logger.
+        :param Handler handler: The underlying log handler, for determining the fileno
+                                to support faulthandler logging.
+        """
+        self._logger = logger
+        self._log_level = log_level
+        self._handler = handler
 
-  def flush(self):
-    return
+    def write(self, msg):
+        msg = ensure_text(msg)
+        for line in msg.rstrip().splitlines():
+            # The log only accepts text, and will raise a decoding error if the default encoding is ascii
+            # if provided a bytes input for unicode text.
+            line = ensure_text(line)
+            self._logger.log(self._log_level, line.rstrip())
 
-  def isatty(self):
-    return False
+    def flush(self):
+        return
 
-  def fileno(self):
-    return self._handler.stream.fileno()
+    def isatty(self):
+        return False
+
+    def fileno(self):
+        return self._handler.stream.fileno()
+
+    @property
+    def buffer(self):
+        return self
 
 
-class PantsDaemon(FingerprintedProcessManager):
-  """A daemon that manages PantsService instances."""
+class PantsDaemon(PantsDaemonProcessManager):
+    """A daemon that manages PantsService instances."""
 
-  JOIN_TIMEOUT_SECONDS = 1
-  LOG_NAME = 'pantsd.log'
+    JOIN_TIMEOUT_SECONDS = 1
+    LOG_NAME = "pantsd.log"
 
-  class StartupFailure(Exception):
-    """Represents a failure to start pantsd."""
+    class StartupFailure(Exception):
+        """Represents a failure to start pantsd."""
 
-  class RuntimeFailure(Exception):
-    """Represents a pantsd failure at runtime, usually from an underlying service failure."""
-
-  class Factory(object):
-    @classmethod
-    def maybe_launch(cls, bootstrap_options=None):
-      """Creates and launches a daemon instance if one does not already exist.
-
-      :param Options bootstrap_options: The bootstrap options, if available.
-      :returns: The pailgun port number of the running pantsd instance.
-      :rtype: int
-      """
-      stub_pantsd = cls.create(bootstrap_options, full_init=False)
-      with stub_pantsd.lifecycle_lock:
-        if stub_pantsd.needs_restart(stub_pantsd.options_fingerprint):
-          # Once we determine we actually need to launch, recreate with full initialization.
-          pantsd = cls.create(bootstrap_options)
-          return pantsd.launch()
-        else:
-          return stub_pantsd.read_named_socket('pailgun', int)
+    class RuntimeFailure(Exception):
+        """Represents a pantsd failure at runtime, usually from an underlying service failure."""
 
     @classmethod
-    def create(cls, bootstrap_options=None, full_init=True):
-      """
-      :param Options bootstrap_options: The bootstrap options, if available.
-      :param bool full_init: Whether or not to fully initialize an engine et al for the purposes
-                             of spawning a new daemon. `full_init=False` is intended primarily
-                             for lightweight lifecycle checks (since there is a ~1s overhead to
-                             initialize the engine). See the impl of `maybe_launch` for an example
-                             of the intended usage.
-      """
-      bootstrap_options = bootstrap_options or cls._parse_bootstrap_options()
-      bootstrap_options_values = bootstrap_options.for_global_scope()
+    def create(cls, options_bootstrapper) -> "PantsDaemon":
+        """
+        :param OptionsBootstrapper options_bootstrapper: The bootstrap options.
+        :param bool full_init: Whether or not to fully initialize an engine et al for the purposes
+                                of spawning a new daemon. `full_init=False` is intended primarily
+                                for lightweight lifecycle checks (since there is a ~1s overhead to
+                                initialize the engine). See the impl of `maybe_launch` for an example
+                                of the intended usage.
+        """
+        native = Native()
+        native.override_thread_logging_destination_to_just_pantsd()
 
-      # TODO: https://github.com/pantsbuild/pants/issues/3479
-      watchman = WatchmanLauncher.create(bootstrap_options_values).watchman
-      native = None
-      build_root = None
-      services = None
-      port_map = None
+        bootstrap_options = options_bootstrapper.bootstrap_options
+        bootstrap_options_values = bootstrap_options.for_global_scope()
 
-      if full_init:
-        build_root = get_buildroot()
-        native = Native.create(bootstrap_options_values)
-        legacy_graph_helper = cls._setup_legacy_graph_helper(native, bootstrap_options_values)
-        services, port_map = cls._setup_services(
-          build_root,
-          bootstrap_options_values,
-          legacy_graph_helper,
-          watchman
+        core = PantsDaemonCore(cls._setup_services)
+
+        server = native.new_nailgun_server(
+            bootstrap_options_values.pantsd_pailgun_port, DaemonPantsRunner(core),
         )
 
-      return PantsDaemon(
-        native=native,
-        build_root=build_root,
-        work_dir=bootstrap_options_values.pants_workdir,
-        log_level=bootstrap_options_values.level.upper(),
-        services=services,
-        socket_map=port_map,
-        metadata_base_dir=bootstrap_options_values.pants_subprocessdir,
-        bootstrap_options=bootstrap_options
-      )
+        return PantsDaemon(
+            native=native,
+            work_dir=bootstrap_options_values.pants_workdir,
+            log_level=bootstrap_options_values.level,
+            server=server,
+            core=core,
+            metadata_base_dir=bootstrap_options_values.pants_subprocessdir,
+            bootstrap_options=bootstrap_options,
+        )
 
     @staticmethod
-    def _parse_bootstrap_options():
-      return OptionsBootstrapper().get_bootstrap_options()
+    def _setup_services(
+        bootstrap_options: OptionValueContainer, legacy_graph_scheduler: LegacyGraphScheduler,
+    ):
+        """Initialize pantsd services.
+
+        :returns: A PantsServices instance.
+        """
+        build_root = get_buildroot()
+
+        # TODO: https://github.com/pantsbuild/pants/issues/3479
+        watchman_launcher = WatchmanLauncher.create(bootstrap_options)
+        watchman_launcher.maybe_launch()
+        watchman = watchman_launcher.watchman
+        fs_event_service = (
+            FSEventService(
+                watchman, scheduler=legacy_graph_scheduler.scheduler, build_root=build_root
+            )
+            if bootstrap_options.watchman_enable
+            else None
+        )
+
+        invalidation_globs = OptionsInitializer.compute_pantsd_invalidation_globs(
+            build_root, bootstrap_options,
+        )
+
+        scheduler_service = SchedulerService(
+            fs_event_service=fs_event_service,
+            legacy_graph_scheduler=legacy_graph_scheduler,
+            build_root=build_root,
+            invalidation_globs=invalidation_globs,
+            pidfile=PantsDaemon.metadata_file_path(
+                "pantsd", "pid", bootstrap_options.pants_subprocessdir
+            ),
+            pid=os.getpid(),
+            max_memory_usage_in_bytes=bootstrap_options.pantsd_max_memory_usage,
+        )
+
+        store_gc_service = StoreGCService(legacy_graph_scheduler.scheduler)
+
+        return PantsServices(
+            services=tuple(
+                service
+                for service in (fs_event_service, scheduler_service, store_gc_service,)
+                if service is not None
+            ),
+        )
+
+    def __init__(
+        self,
+        native: Native,
+        work_dir: str,
+        log_level: LogLevel,
+        server: Any,
+        core: PantsDaemonCore,
+        metadata_base_dir: str,
+        bootstrap_options: Options,
+    ):
+        """
+        NB: A PantsDaemon instance is generally instantiated via `create`.
+
+        :param native: A `Native` instance.
+        :param work_dir: The pants work directory.
+        :param log_level: The log level to use for daemon logging.
+        :param server: A native PyNailgunServer instance (not currently a nameable type).
+        :param core: A PantsDaemonCore.
+        :param metadata_base_dir: The ProcessManager metadata base dir.
+        :param bootstrap_options: The bootstrap options.
+        """
+        super().__init__(bootstrap_options, daemon_entrypoint=__name__)
+        self._native = native
+        self._build_root = get_buildroot()
+        self._work_dir = work_dir
+        self._log_level = log_level
+        self._server = server
+        self._core = core
+        self._bootstrap_options = bootstrap_options
+        self._log_show_rust_3rdparty = (
+            bootstrap_options.for_global_scope().log_show_rust_3rdparty
+            if bootstrap_options
+            else True
+        )
+
+        self._logger = logging.getLogger(__name__)
 
     @staticmethod
-    def _setup_legacy_graph_helper(native, bootstrap_options):
-      """Initializes a `LegacyGraphHelper` instance."""
-      return EngineInitializer.setup_legacy_graph(
-        bootstrap_options.pants_ignore,
-        bootstrap_options.pants_workdir,
-        bootstrap_options.build_file_imports,
-        native=native,
-        build_ignore_patterns=bootstrap_options.build_ignore,
-        exclude_target_regexps=bootstrap_options.exclude_target_regexp,
-        subproject_roots=bootstrap_options.subproject_roots,
-      )
+    def _close_stdio():
+        """Close stdio streams to avoid output in the tty that launched pantsd."""
+        for fd in (sys.stdin, sys.stdout, sys.stderr):
+            file_no = fd.fileno()
+            fd.flush()
+            fd.close()
+            os.close(file_no)
 
-    @staticmethod
-    def _setup_services(build_root, bootstrap_options, legacy_graph_helper, watchman):
-      """Initialize pantsd services.
+    @contextmanager
+    def _pantsd_logging(self) -> Iterator[IO[str]]:
+        """A context manager that runs with pantsd logging.
 
-      :returns: A tuple of (`tuple` service_instances, `dict` port_map).
-      """
-      fs_event_service = FSEventService(
-        watchman,
-        build_root,
-        bootstrap_options.pantsd_fs_event_workers
-      )
+        Asserts that stdio (represented by file handles 0, 1, 2) is closed to ensure that we can
+        safely reuse those fd numbers.
+        """
 
-      scheduler_service = SchedulerService(
-        fs_event_service,
-        legacy_graph_helper,
-        build_root,
-        bootstrap_options.pantsd_invalidation_globs
-      )
+        # Ensure that stdio is closed so that we can safely reuse those file descriptors.
+        for fd in (0, 1, 2):
+            try:
+                os.fdopen(fd)
+                raise AssertionError(f"pantsd logging cannot initialize while stdio is open: {fd}")
+            except OSError:
+                pass
 
-      pailgun_service = PailgunService(
-        bind_addr=(bootstrap_options.pantsd_pailgun_host, bootstrap_options.pantsd_pailgun_port),
-        exiter_class=DaemonExiter,
-        runner_class=DaemonPantsRunner,
-        target_roots_calculator=TargetRootsCalculator,
-        scheduler_service=scheduler_service
-      )
+        # Redirect stdio to /dev/null for the rest of the run, to reserve those file descriptors
+        # for further forks.
+        with stdio_as(stdin_fd=-1, stdout_fd=-1, stderr_fd=-1):
+            # Reinitialize logging for the daemon context.
+            init_rust_logger(self._log_level, self._log_show_rust_3rdparty)
 
-      store_gc_service = StoreGCService(legacy_graph_helper.scheduler)
+            level = self._log_level
+            ignores = self._bootstrap_options.for_global_scope().ignore_pants_warnings
+            clear_logging_handlers()
+            log_dir = os.path.join(self._work_dir, self.name)
+            log_handler = setup_logging_to_file(
+                level, log_dir=log_dir, log_filename=self.LOG_NAME, warnings_filter_regexes=ignores
+            )
 
-      return (
-        # Services.
-        (fs_event_service, scheduler_service, pailgun_service, store_gc_service),
-        # Port map.
-        dict(pailgun=pailgun_service.pailgun_port)
-      )
+            self._native.override_thread_logging_destination_to_just_pantsd()
 
-  def __init__(self, native, build_root, work_dir, log_level, services, socket_map,
-               metadata_base_dir, bootstrap_options=None):
-    """
-    :param Native native: A `Native` instance.
-    :param string build_root: The pants build root.
-    :param string work_dir: The pants work directory.
-    :param string log_level: The log level to use for daemon logging.
-    :param string metadata_base_dir: The ProcessManager metadata base dir.
-    :param Options bootstrap_options: The bootstrap options, if available.
-    """
-    super(PantsDaemon, self).__init__(name='pantsd', metadata_base_dir=metadata_base_dir)
-    self._native = native
-    self._build_root = build_root
-    self._work_dir = work_dir
-    self._log_level = log_level
-    self._services = services
-    self._socket_map = socket_map
-    self._bootstrap_options = bootstrap_options
+            # Do a python-level redirect of stdout/stderr, which will not disturb `0,1,2`.
+            # TODO: Consider giving these pipes/actual fds, in order to make them "deep" replacements
+            # for `1,2`, and allow them to be used via `stdio_as`.
+            sys.stdout = _LoggerStream(logging.getLogger(), logging.INFO, log_handler)  # type: ignore[assignment]
+            sys.stderr = _LoggerStream(logging.getLogger(), logging.WARN, log_handler)  # type: ignore[assignment]
 
-    self._log_dir = os.path.join(work_dir, self.name)
-    self._logger = logging.getLogger(__name__)
-    # A lock to guard the service thread lifecycles. This can be used by individual services
-    # to safeguard daemon-synchronous sections that should be protected from abrupt teardown.
-    self._lifecycle_lock = threading.RLock()
-    # A lock to guard pantsd->runner forks. This can be used by services to safeguard resources
-    # held by threads at fork time, so that we can fork without deadlocking.
-    self._fork_lock = threading.RLock()
-    # N.B. This Event is used as nothing more than a convenient atomic flag - nothing waits on it.
-    self._kill_switch = threading.Event()
-    self._exiter = Exiter()
+            self._logger.debug("logging initialized")
+            yield log_handler.stream
 
-  @memoized_property
-  def watchman_launcher(self):
-    return WatchmanLauncher.create(self._bootstrap_options.for_global_scope())
+    def _write_nailgun_port(self):
+        """Write the nailgun port to a well known file."""
+        self.write_socket(self._server.port())
 
-  @property
-  def is_killed(self):
-    return self._kill_switch.is_set()
+    def _initialize_pid(self):
+        """Writes out our pid and metadata.
 
-  @property
-  def options_fingerprint(self):
-    return OptionsFingerprinter.combined_options_fingerprint_for_scope(
-      GLOBAL_SCOPE,
-      self._bootstrap_options,
-      fingerprint_key='daemon',
-      invert=True
-    )
+        Once written, does a one-time read of the pid to confirm that we haven't raced another
+        process starting.
+        """
 
-  def shutdown(self, service_thread_map):
-    """Gracefully terminate all services and kill the main PantsDaemon loop."""
-    with self._lifecycle_lock:
-      for service, service_thread in service_thread_map.items():
-        self._logger.info('terminating pantsd service: {}'.format(service))
-        service.terminate()
-        service_thread.join(self.JOIN_TIMEOUT_SECONDS)
-      self._logger.info('terminating pantsd')
-      self._kill_switch.set()
+        # Write the pidfile. The SchedulerService will monitor it after a grace period.
+        pid = os.getpid()
+        self.write_pid(pid=pid)
+        self.write_metadata_by_name(
+            "pantsd", self.FINGERPRINT_KEY, ensure_text(self.options_fingerprint)
+        )
 
-  @staticmethod
-  def _close_stdio():
-    """Close stdio streams to avoid output in the tty that launched pantsd."""
-    for fd in (sys.stdin, sys.stdout, sys.stderr):
-      file_no = fd.fileno()
-      fd.flush()
-      fd.close()
-      os.close(file_no)
+    def run_sync(self):
+        """Synchronously run pantsd."""
+        os.environ.pop("PYTHONPATH")
 
-  @contextmanager
-  def _pantsd_logging(self):
-    """A context manager that runs with pantsd logging.
+        # Switch log output to the daemon's log stream from here forward.
+        self._close_stdio()
+        with self._pantsd_logging() as log_stream:
 
-    Asserts that stdio (represented by file handles 0, 1, 2) is closed to ensure that
-    we can safely reuse those fd numbers.
-    """
+            # We don't have any stdio streams to log to anymore, so we log to a file.
+            # We don't override the faulthandler destination because the stream we get will proxy things
+            # via the rust logging code, and faulthandler needs to be writing directly to a real file
+            # descriptor. When pantsd logging was originally initialised, we already set up faulthandler
+            # to log to the correct file descriptor, so don't override it.
+            #
+            # We can get tracebacks of the pantsd process by tailing the pantsd log and sending it
+            # SIGUSR2.
+            ExceptionSink.reset_interactive_output_stream(
+                log_stream, override_faulthandler_destination=False,
+            )
 
-    # Ensure that stdio is closed so that we can safely reuse those file descriptors.
-    for fd in (0, 1, 2):
-      try:
-        os.fdopen(fd)
-        raise AssertionError(
-            'pantsd logging cannot initialize while stdio is open: {}'.format(fd))
-      except OSError:
-        pass
+            # Reset the log location and the backtrace preference from the global bootstrap options.
+            global_bootstrap_options = self._bootstrap_options.for_global_scope()
+            ExceptionSink.reset_should_print_backtrace_to_terminal(
+                global_bootstrap_options.print_exception_stacktrace
+            )
+            ExceptionSink.reset_log_location(global_bootstrap_options.pants_workdir)
 
-    # Redirect stdio to /dev/null for the rest of the run, to reserve those file descriptors
-    # for further forks.
-    with stdio_as(stdin_fd=-1, stdout_fd=-1, stderr_fd=-1):
-      # Reinitialize logging for the daemon context.
-      result = setup_logging(self._log_level, log_dir=self._log_dir, log_name=self.LOG_NAME)
+            self._native.set_panic_handler()
 
-      # Do a python-level redirect of stdout/stderr, which will not disturb `0,1,2`.
-      # TODO: Consider giving these pipes/actual fds, in order to make them "deep" replacements
-      # for `1,2`, and allow them to be used via `stdio_as`.
-      sys.stdout = _LoggerStream(logging.getLogger(), logging.INFO, result.log_handler)
-      sys.stderr = _LoggerStream(logging.getLogger(), logging.WARN, result.log_handler)
+            # Set the process name in ps output to 'pantsd' vs './pants compile src/etc:: -ldebug'.
+            set_process_title(f"pantsd [{self._build_root}]")
 
-      self._logger.debug('logging initialized')
-      yield result.log_handler.stream
+            # Write our pid and the server's port to .pids. Order matters a bit here, because
+            # technically all that is necessary to connect is the port, and Services are lazily
+            # initialized by the core when a connection is established. Our pid needs to be on
+            # disk before that happens.
+            self._initialize_pid()
+            self._write_nailgun_port()
 
-  def _setup_services(self, services):
-    assert self._lifecycle_lock is not None, 'PantsDaemon lock has not been set!'
-    assert self._fork_lock is not None, 'PantsDaemon fork lock has not been set!'
-    for service in services:
-      self._logger.info('setting up service {}'.format(service))
-      service.setup(self._lifecycle_lock, self._fork_lock)
+            # Check periodically whether the core is valid, and exit if it is not.
+            while self._core.is_valid():
+                time.sleep(self.JOIN_TIMEOUT_SECONDS)
 
-  @staticmethod
-  def _make_thread(target):
-    t = threading.Thread(target=target)
-    t.daemon = True
-    return t
-
-  def _run_services(self, services):
-    """Service runner main loop."""
-    if not services:
-      self._logger.critical('no services to run, bailing!')
-      return
-
-    service_thread_map = {service: self._make_thread(service.run) for service in services}
-
-    # Start services.
-    for service, service_thread in service_thread_map.items():
-      self._logger.info('starting service {}'.format(service))
-      try:
-        service_thread.start()
-      except (RuntimeError, service.ServiceError):
-        self.shutdown(service_thread_map)
-        raise self.StartupFailure('service {} failed to start, shutting down!'.format(service))
-
-    # Once all services are started, write our pid.
-    self.write_pid()
-    self.write_metadata_by_name('pantsd', self.FINGERPRINT_KEY, self.options_fingerprint)
-
-    # Monitor services.
-    while not self.is_killed:
-      for service, service_thread in service_thread_map.items():
-        if not service_thread.is_alive():
-          self.shutdown(service_thread_map)
-          raise self.RuntimeFailure('service failure for {}, shutting down!'.format(service))
-        else:
-          # Avoid excessive CPU utilization.
-          service_thread.join(self.JOIN_TIMEOUT_SECONDS)
-
-  def _write_named_sockets(self, socket_map):
-    """Write multiple named sockets using a socket mapping."""
-    for socket_name, socket_info in socket_map.items():
-      self.write_named_socket(socket_name, socket_info)
-
-  def run_sync(self):
-    """Synchronously run pantsd."""
-    # Switch log output to the daemon's log stream from here forward.
-    self._close_stdio()
-    with self._pantsd_logging() as log_stream:
-      self._exiter.set_except_hook(log_stream)
-      self._logger.info('pantsd starting, log level is {}'.format(self._log_level))
-
-      self._native.set_panic_handler()
-
-      # Set the process name in ps output to 'pantsd' vs './pants compile src/etc:: -ldebug'.
-      set_process_title('pantsd [{}]'.format(self._build_root))
-
-      # Write service socket information to .pids.
-      self._write_named_sockets(self._socket_map)
-
-      # Enter the main service runner loop.
-      self._setup_services(self._services)
-      self._run_services(self._services)
-
-  def post_fork_child(self):
-    """Post-fork() child callback for ProcessManager.daemon_spawn()."""
-    entry_point = '{}:launch'.format(__name__)
-    exec_env = combined_dict(os.environ, dict(PANTS_ENTRYPOINT=entry_point))
-    # Pass all of sys.argv so that we can proxy arg flags e.g. `-ldebug`.
-    cmd = [sys.executable] + sys.argv
-    self._logger.debug('cmd is: PANTS_ENTRYPOINT={} {}'.format(entry_point, ' '.join(cmd)))
-    # TODO: Improve error handling on launch failures.
-    os.spawnve(os.P_NOWAIT, sys.executable, cmd, env=exec_env)
-
-  def needs_launch(self):
-    """Determines if pantsd needs to be launched.
-
-    N.B. This should always be called under care of `self.lifecycle_lock`.
-
-    :returns: True if the daemon needs launching, False otherwise.
-    :rtype: bool
-    """
-    new_fingerprint = self.options_fingerprint
-    self._logger.debug('pantsd: is_alive={} new_fingerprint={} current_fingerprint={}'
-                       .format(self.is_alive(), new_fingerprint, self.fingerprint))
-    return self.needs_restart(new_fingerprint)
-
-  def launch(self):
-    """Launches pantsd in a subprocess.
-
-    N.B. This should always be called under care of `self.lifecycle_lock`.
-
-    :returns: The port that pantsd is listening on.
-    :rtype: int
-    """
-    self.terminate(include_watchman=False)
-    self.watchman_launcher.maybe_launch()
-    self._logger.debug('launching pantsd')
-    self.daemon_spawn()
-    # Wait up to 60 seconds for pantsd to write its pidfile.
-    self.await_pid(60)
-    listening_port = self.read_named_socket('pailgun', int)
-    self._logger.debug('pantsd is running at pid {}, pailgun port is {}'
-                       .format(self.pid, listening_port))
-    return listening_port
-
-  def terminate(self, include_watchman=True):
-    """Terminates pantsd and watchman."""
-    with self.lifecycle_lock:
-      super(PantsDaemon, self).terminate()
-      if include_watchman:
-        self.watchman_launcher.terminate()
+            # We're exiting: join the server to avoid interrupting ongoing runs.
+            self._logger.info("waiting for ongoing runs to complete before exiting...")
+            self._native.nailgun_server_await_shutdown(self._server)
+            self._logger.info("exiting.")
 
 
 def launch():
-  """An external entrypoint that spawns a new pantsd instance."""
-  PantsDaemon.Factory.create().run_sync()
+    """An external entrypoint that spawns a new pantsd instance."""
+    PantsDaemon.create(OptionsBootstrapper.create()).run_sync()

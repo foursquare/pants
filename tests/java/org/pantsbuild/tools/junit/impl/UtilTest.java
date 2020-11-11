@@ -16,8 +16,9 @@ import org.pantsbuild.tools.junit.lib.NotATestNoPublicConstructor;
 import org.pantsbuild.tools.junit.lib.NotATestNoRunnableMethods;
 import org.pantsbuild.tools.junit.lib.NotATestNonzeroArgConstructor;
 import org.pantsbuild.tools.junit.lib.NotATestPrivateClass;
+import org.pantsbuild.tools.junit.lib.ParameterizedTest;
 import org.pantsbuild.tools.junit.lib.UnannotatedTestClass;
-import org.pantsbuild.tools.junit.lib.XmlReportFirstTestIngoredTest;
+import org.pantsbuild.tools.junit.lib.XmlReportFirstTestIgnoredTest;
 import org.pantsbuild.tools.junit.lib.XmlReportIgnoredTestSuiteTest;
 
 import static org.junit.Assert.assertEquals;
@@ -34,17 +35,17 @@ public class UtilTest {
 
   @Test
   public void testIsIgnoredDescription() throws Exception {
-    assertTrue(Util.isIgnored(getDescription(XmlReportFirstTestIngoredTest.class,
+    assertTrue(Util.isIgnored(getDescription(XmlReportFirstTestIgnoredTest.class,
         "testXmlIgnored")));
-    assertFalse(Util.isIgnored(getDescription(XmlReportFirstTestIngoredTest.class,
+    assertFalse(Util.isIgnored(getDescription(XmlReportFirstTestIgnoredTest.class,
         "testXmlPassing")));
   }
 
   @Test
   public void testIsRunnableDescription() throws Exception {
-    assertFalse(Util.isRunnable(getDescription(XmlReportFirstTestIngoredTest.class,
+    assertFalse(Util.isRunnable(getDescription(XmlReportFirstTestIgnoredTest.class,
         "testXmlIgnored")));
-    assertTrue(Util.isRunnable(getDescription(XmlReportFirstTestIngoredTest.class,
+    assertTrue(Util.isRunnable(getDescription(XmlReportFirstTestIgnoredTest.class,
         "testXmlPassing")));
   }
 
@@ -76,7 +77,7 @@ public class UtilTest {
         Util.sanitizeSuiteName("Thequickbrownfoxjumpedoverthelazydog."));
     assertEquals("이것은-한국인", Util.sanitizeSuiteName("이것은 한국인..."));
     String sanitizedPunctuations = Util.sanitizeSuiteName("`~!@#$%^&*()+-=[]{}\\/<>|");
-    assertTrue("Sanitized punctions were't converted to all hyphens: " + sanitizedPunctuations,
+    assertTrue("Sanitized punctuations weren't converted to all hyphens: " + sanitizedPunctuations,
         sanitizedPunctuations.matches("^[-]+$"));
   }
 
@@ -104,6 +105,7 @@ public class UtilTest {
     assertTrue(Util.isTestClass(MockRunWithTest.class));
     assertTrue(Util.isTestClass(UnannotatedTestClass.class));
     assertTrue(Util.isTestClass(MockScalaTest.class));
+    assertTrue(Util.isTestClass(ParameterizedTest.class));
     assertFalse(Util.isTestClass(NotATestAbstractClass.class));
     assertFalse(Util.isTestClass(NotATestNonzeroArgConstructor.class));
     assertFalse(Util.isTestClass(NotATestNoPublicConstructor.class));

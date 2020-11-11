@@ -4,13 +4,27 @@
 contrib_plugin(
   name='plugin',
   dependencies=[
+    ':target_types',
     'contrib/go/src/python/pants/contrib/go/targets',
     'contrib/go/src/python/pants/contrib/go/tasks',
     'src/python/pants/build_graph',
     'src/python/pants/goal:task_registrar',
   ],
-  distribution_name='pantsbuild.pants.contrib.go',
-  description='Go language support for pants.',
-  build_file_aliases=True,
-  register_goals=True,
+  tags = {'partially_type_checked'},
+  provides=contrib_setup_py(
+    name='pantsbuild.pants.contrib.go',
+    description='Go language support for pants.',
+    build_file_aliases=True,
+    register_goals=True,
+    target_types=True,
+  )
+)
+
+python_library(
+  name='target_types',
+  sources=['target_types.py'],
+  dependencies=[
+    'src/python/pants/engine:target',
+  ],
+  tags = {"type_checked"},
 )

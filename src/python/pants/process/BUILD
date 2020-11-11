@@ -5,7 +5,8 @@ python_library(
   dependencies = [
     '3rdparty/python:fasteners',
     '3rdparty/python:psutil',
+    'src/python/pants/subsystem',
     'src/python/pants/util:dirutil',
-    'src/python/pants/util:process_handler',
-  ]
+  ],
+  tags = {"partially_type_checked"},
 )

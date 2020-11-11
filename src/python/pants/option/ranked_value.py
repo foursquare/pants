@@ -1,121 +1,96 @@
-# coding=utf-8
 # Copyright 2014 Pants project contributors (see CONTRIBUTORS.md).
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 
-from __future__ import (absolute_import, division, generators, nested_scopes, print_function,
-                        unicode_literals, with_statement)
+from dataclasses import dataclass
+from enum import Enum
+from functools import total_ordering
+from typing import Any, Dict, Iterator, List, Union
 
 
-class RankedValue(object):
-  """An option value, together with a rank inferred from its source.
+@total_ordering
+class Rank(Enum):
+    # The ranked value sources. Higher ranks override lower ones.
+    NONE = (0, "NONE")  # The value None.
+    HARDCODED = (1, "HARDCODED")  # The default provided at option registration.
+    CONFIG_DEFAULT = (2, "CONFIG_DEFAULT")  # The value from the DEFAULT section of the config file.
+    CONFIG = (3, "CONFIG")  # The value from the relevant section of the config file.
+    ENVIRONMENT = (4, "ENVIRONMENT")  # The value from the appropriately-named environment variable.
+    FLAG = (5, "FLAG")  # The value from the appropriately-named command-line flag.
 
-  Allows us to control which source wins: e.g., a command-line flag overrides an environment
-  variable which overrides a config, etc. For example:
+    _rank: int
 
-  Consider this config:
+    def __new__(cls, rank: int, display: str) -> "Rank":
+        member: "Rank" = object.__new__(cls)
+        member._value_ = display
+        member._rank = rank
+        return member
 
-  [compile.java]
-  foo: 11
+    def __lt__(self, other: Any) -> Union["NotImplemented", bool]:
+        if type(other) != Rank:
+            return NotImplemented
+        return self._rank < other._rank
 
-  And this environment variable:
 
-  PANTS_COMPILE_FOO: 22
+Value = Union[str, int, float, None, Dict, Enum, List]
 
- If the command-line is
 
-  ./pants compile target
+@dataclass(frozen=True)
+class RankedValue:
+    """An option value, together with a rank inferred from its source.
 
-  we expect the value of foo in the compile.java scope to be 22, because it was explicitly
-  set by the user in the enclosing compile scope. I.e., the outer scope's environment value
-  overrides the inner scope's config value.
+     Allows us to control which source wins: e.g., a command-line flag overrides an environment
+     variable which overrides a config, etc. For example:
 
-  However if the command-line is
+     Consider this config:
 
-  ./pants compile.java --foo=33 target
+     [compile.java]
+     foo: 11
 
-  we now expect the value of foo in the compile.java to be 33. I.e., the inner scope's flag
-  overrides the outer scope's environment value.
+     And this environment variable:
 
-  To tell these cases apart we need to know the "ranking" of the value.
-  """
+     PANTS_COMPILE_FOO: 22
 
-  # The ranked value sources. Higher ranks override lower ones.
-  NONE = 0  # The value None.
-  HARDCODED = 1  # The default provided at option registration.
-  CONFIG_DEFAULT = 2  # The value from the DEFAULT section of the config file.
-  CONFIG = 3  # The value from the relevant section of the config file.
-  ENVIRONMENT = 4  # The value from the appropriately-named environment variable.
-  FLAG = 5  # The value from the appropriately-named command-line flag.
+    If the command-line is
 
-  _RANK_NAMES = {
-    NONE: 'NONE',
-    HARDCODED: 'HARDCODED',
-    CONFIG_DEFAULT: 'CONFIG_DEFAULT',
-    CONFIG: 'CONFIG',
-    ENVIRONMENT: 'ENVIRONMENT',
-    FLAG: 'FLAG'
-  }
+     ./pants compile target
 
-  @classmethod
-  def get_rank_name(cls, rank):
-    """Returns the string name for the given rank integer.
+     we expect the value of foo in the compile.java scope to be 22, because it was explicitly
+     set by the user in the enclosing compile scope. I.e., the outer scope's environment value
+     overrides the inner scope's config value.
 
-    :param int rank: the integer rank constant (E.g., RankedValue.HARDCODED).
-    :returns: the string name of the rank.
-    :rtype: string
+     However if the command-line is
+
+     ./pants compile.java --foo=33 target
+
+     we now expect the value of foo in the compile.java to be 33. I.e., the inner scope's flag
+     overrides the outer scope's environment value.
+
+     To tell these cases apart we need to know the "ranking" of the value.
     """
-    return cls._RANK_NAMES.get(rank, 'UNKNOWN')
 
-  @classmethod
-  def get_rank_value(cls, name):
-    """Returns the integer constant value for the given rank name.
+    @classmethod
+    def prioritized_iter(
+        cls,
+        flag_val: Value,
+        env_val: Value,
+        config_val: Value,
+        config_default_val: Value,
+        hardcoded_val: Value,
+        default: Value,
+    ) -> Iterator["RankedValue"]:
+        """Yield the non-None values from highest-ranked to lowest, wrapped in RankedValue
+        instances."""
+        if flag_val is not None:
+            yield RankedValue(Rank.FLAG, flag_val)
+        if env_val is not None:
+            yield RankedValue(Rank.ENVIRONMENT, env_val)
+        if config_val is not None:
+            yield RankedValue(Rank.CONFIG, config_val)
+        if config_default_val is not None:
+            yield RankedValue(Rank.CONFIG_DEFAULT, config_default_val)
+        if hardcoded_val is not None:
+            yield RankedValue(Rank.HARDCODED, hardcoded_val)
+        yield RankedValue(Rank.NONE, default)
 
-    :param string rank: the string rank name (E.g., 'HARDCODED').
-    :returns: the integer constant value of the rank.
-    :rtype: int
-    """
-    if name in cls._RANK_NAMES.values():
-      return getattr(cls, name, None)
-    return None
-
-  @classmethod
-  def get_names(cls):
-    """Returns the list of rank names.
-
-    :returns: the rank names as a list (I.e., ['NONE', 'HARDCODED', 'CONFIG', ...])
-    :rtype: list
-    """
-    return sorted(cls._RANK_NAMES.values(), key=cls.get_rank_value)
-
-  @classmethod
-  def prioritized_iter(cls, flag_val, env_val, config_val, config_default_val, hardcoded_val, default):
-    """Yield the non-None values from highest-ranked to lowest, wrapped in RankedValue instances."""
-    if flag_val is not None:
-      yield RankedValue(cls.FLAG, flag_val)
-    if env_val is not None:
-      yield RankedValue(cls.ENVIRONMENT, env_val)
-    if config_val is not None:
-      yield RankedValue(cls.CONFIG, config_val)
-    if config_default_val is not None:
-      yield RankedValue(cls.CONFIG_DEFAULT, config_default_val)
-    if hardcoded_val is not None:
-      yield RankedValue(cls.HARDCODED, hardcoded_val)
-    yield RankedValue(cls.NONE, default)
-
-  def __init__(self, rank, value):
-    self._rank = rank
-    self._value = value
-
-  @property
-  def rank(self):
-    return self._rank
-
-  @property
-  def value(self):
-    return self._value
-
-  def __eq__(self, other):
-    return self._rank == other._rank and self._value == other._value
-
-  def __repr__(self):
-    return '({0}, {1})'.format(self.get_rank_name(self._rank), self._value)
+    rank: Rank
+    value: Value

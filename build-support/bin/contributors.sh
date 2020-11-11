@@ -3,6 +3,7 @@
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT" || exit 1
 
+# shellcheck source=build-support/common.sh
 source "${REPO_ROOT}/build-support/common.sh"
 
 function usage() {
@@ -67,6 +68,6 @@ Alyssa Pohahau
 FIXED_LIST
 ) | grep -v -E "^[[:space:]]*#" | \
     grep -v -E "^[[:space:]]*$" | \
-    sort -u | \
+    LC_ALL=C sort -u | \
     sed -E -e "s|^|+ |" >> CONTRIBUTORS.md
 fi

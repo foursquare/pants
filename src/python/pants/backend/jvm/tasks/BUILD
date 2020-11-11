@@ -4,6 +4,7 @@
 target(
   name = 'all',
   dependencies = [
+    ':analysis_extraction',
     ':benchmark_run',
     ':binary_create',
     ':bootstrap_jvm_tools',
@@ -16,8 +17,6 @@ target(
     ':detect_duplicates',
     ':ivy_imports',
     ':ivy_outdated',
-    ':ivy_resolve',
-    ':ivy_task_mixin',
     ':jar_create',
     ':jar_import_products',
     ':jar_publish',
@@ -37,6 +36,7 @@ target(
     ':properties',
     ':provide_tools_jar',
     ':resources_task',
+    ':resolve_shared',
     ':run_jvm_prep_command',
     ':scala_repl',
     ':scaladoc_gen',
@@ -46,6 +46,20 @@ target(
     ':unpack_jars',
     'src/python/pants/backend/jvm/tasks/jvm_compile:all',
   ],
+)
+
+python_library(
+  name = 'analysis_extraction',
+  sources = ['analysis_extraction.py'],
+  dependencies = [
+    ':nailgun_task',
+    'src/python/pants/backend/jvm/subsystems:dependency_context',
+    'src/python/pants/backend/jvm/subsystems:zinc',
+    'src/python/pants/goal:products',
+    'src/python/pants/task',
+    'src/python/pants/util:memo',
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -60,6 +74,7 @@ python_library(
     'src/python/pants/java:util',
     'src/python/pants/task',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -70,6 +85,7 @@ python_library(
     'src/python/pants/base:build_environment',
     'src/python/pants/util:dirutil',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -80,13 +96,13 @@ python_library(
     'src/python/pants/base:build_environment',
     'src/python/pants/util:dirutil',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
   name = 'bootstrap_jvm_tools',
   sources = ['bootstrap_jvm_tools.py'],
   dependencies = [
-    ':ivy_task_mixin',
     ':jar_task',
     'src/python/pants/backend/jvm/subsystems:jvm_tool_mixin',
     'src/python/pants/backend/jvm/subsystems:shader',
@@ -100,13 +116,14 @@ python_library(
     'src/python/pants/util:fileutil',
     'src/python/pants/util:memo',
   ],
+  tags = {'partially_type_checked'},
 )
 
 python_library(
   name = 'bundle_create',
   sources = ['bundle_create.py'],
   dependencies = [
-    '3rdparty/python/twitter/commons:twitter.common.collections',
+    '3rdparty/python:dataclasses',
     ':classpath_products',
     ':jvm_binary_task',
     'src/python/pants/backend/jvm/targets:jvm',
@@ -114,11 +131,13 @@ python_library(
     'src/python/pants/base:deprecated',
     'src/python/pants/base:exceptions',
     'src/python/pants/build_graph',
+    'src/python/pants/build_graph:bundle_mixin',
     'src/python/pants/fs',
     'src/python/pants/util:dirutil',
     'src/python/pants/util:fileutil',
-    'src/python/pants/util:objects',
+    'src/python/pants/util:ordered_set',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -129,6 +148,7 @@ python_library(
     'src/python/pants/backend/jvm/targets:jvm',
     'src/python/pants/task',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -136,32 +156,43 @@ python_library(
   sources = ['checkstyle.py'],
   dependencies = [
     ':nailgun_task',
-    '3rdparty/python/twitter/commons:twitter.common.collections',
     'src/python/pants/java/jar',
+    'src/python/pants/backend/jvm/subsystems:checkstyle',
     'src/python/pants/backend/jvm/subsystems:shader',
     'src/python/pants/base:exceptions',
     'src/python/pants/option',
     'src/python/pants/process',
     'src/python/pants/task',
     'src/python/pants/util:dirutil',
+    'src/python/pants/util:ordered_set',
   ],
+  tags = {'partially_type_checked'},
+)
+
+python_library(
+  name = 'classpath_entry',
+  sources = ['classpath_entry.py'],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
   name = 'classpath_util',
   sources = ['classpath_util.py'],
   dependencies = [
-    '3rdparty/python/twitter/commons:twitter.common.collections',
+    ':classpath_entry',
     'src/python/pants/util:contextutil',
     'src/python/pants/util:dirutil',
+    'src/python/pants/util:ordered_set',
     'src/python/pants/util:strutil',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
   name = 'classpath_products',
   sources = ['classpath_products.py'],
   dependencies = [
+    ':classpath_entry',
     ':classpath_util',
     'src/python/pants/java/jar',
     'src/python/pants/backend/jvm/targets:jvm',
@@ -170,7 +201,9 @@ python_library(
     'src/python/pants/build_graph',
     'src/python/pants/goal:products',
     'src/python/pants/util:dirutil',
+    'src/python/pants/util:ordered_set',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -183,6 +216,7 @@ python_library(
     'src/python/pants/option',
     'src/python/pants/util:memo',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -190,48 +224,11 @@ python_library(
   sources = ['ivy_imports.py'],
   dependencies = [
     ':classpath_products',
-    ':ivy_task_mixin',
     ':jar_import_products',
     ':nailgun_task',
-    'src/python/pants/backend/jvm/targets:jvm'
-  ],
-)
-
-python_library(
-  name = 'ivy_resolve',
-  sources = ['ivy_resolve.py'],
-  dependencies = [
-    ':classpath_products',
-    ':ivy_task_mixin',
-    ':nailgun_task',
-    'src/python/pants/backend/jvm:ivy_utils',
-    'src/python/pants/java/jar',
-    'src/python/pants/base:exceptions',
-    'src/python/pants/invalidation',
-    'src/python/pants/util:desktop',
-    'src/python/pants/util:dirutil',
-    'src/python/pants/util:strutil',
-    'src/python/pants/backend/jvm/subsystems:resolve_subsystem'
-  ],
-)
-
-python_library(
-  name = 'ivy_task_mixin',
-  sources = ['ivy_task_mixin.py'],
-  dependencies = [
-    'src/python/pants/backend/jvm/subsystems:jar_dependency_management',
     'src/python/pants/backend/jvm/targets:jvm',
-    'src/python/pants/backend/jvm/tasks:classpath_products',
-    'src/python/pants/backend/jvm:ivy_utils',
-    'src/python/pants/java/jar',
-    'src/python/pants/base:exceptions',
-    'src/python/pants/base:fingerprint_strategy',
-    'src/python/pants/invalidation',
-    'src/python/pants/ivy',
-    'src/python/pants/task',
-    'src/python/pants/util:dirutil',
-    'src/python/pants/util:memo',
   ],
+  tags = {'partially_type_checked'},
 )
 
 python_library(
@@ -242,10 +239,12 @@ python_library(
     ':nailgun_task',
     'src/python/pants/backend/jvm:ivy_utils',
     'src/python/pants/backend/jvm/subsystems:shader',
+    'src/python/pants/base:deprecated',
     'src/python/pants/ivy',
     'src/python/pants/java/jar',
     'src/python/pants/util:memo',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -254,16 +253,24 @@ python_library(
   dependencies = [
     ':classpath_products',
     ':nailgun_task',
+    ':resolve_shared',
+    'src/python/pants/backend/jvm/subsystems:resolve_subsystem',
+    'src/python/pants/backend/jvm/targets:jvm',
     'src/python/pants/backend/jvm/tasks/coursier',
-    'src/python/pants/backend/jvm:ivy_utils',
-    'src/python/pants/java/jar',
     'src/python/pants/base:exceptions',
+    'src/python/pants/base:fingerprint_strategy',
+    'src/python/pants/base:revision',
+    'src/python/pants/base:workunit',
     'src/python/pants/invalidation',
-    'src/python/pants/util:desktop',
+    'src/python/pants/java:executor',
+    'src/python/pants/java:util',
+    'src/python/pants/java/distribution',
+    'src/python/pants/java/jar',
+    'src/python/pants/util:contextutil',
     'src/python/pants/util:dirutil',
-    'src/python/pants/util:strutil',
-    'src/python/pants/backend/jvm/subsystems:resolve_subsystem'
+    'src/python/pants/util:fileutil',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -275,6 +282,7 @@ python_library(
     'src/python/pants/base:workunit',
     'src/python/pants/backend/jvm/targets:jvm',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -282,14 +290,14 @@ python_library(
   sources=['jar_import_products.py'],
   dependencies=[
     'src/python/pants/backend/jvm/targets:jvm',
-  ]
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
   name = 'jar_publish',
   sources = ['jar_publish.py'],
   dependencies = [
-    '3rdparty/python/twitter/commons:twitter.common.collections',
     ':jar_publish_resources',
     ':jar_task',
     ':properties',
@@ -297,7 +305,6 @@ python_library(
     'src/python/pants/backend/jvm/targets:scala',
     'src/python/pants/backend/jvm:ossrh_publication_metadata',
     'src/python/pants/base:build_environment',
-    'src/python/pants/base:build_file',
     'src/python/pants/base:exceptions',
     'src/python/pants/base:generator',
     'src/python/pants/build_graph',
@@ -306,21 +313,21 @@ python_library(
     'src/python/pants/scm',
     'src/python/pants/task',
     'src/python/pants/util:dirutil',
+    'src/python/pants/util:ordered_set',
     'src/python/pants/util:strutil',
   ],
+  tags = {"partially_type_checked"},
 )
 
 resources(
   name = 'jar_publish_resources',
-  sources = globs('templates/jar_publish/*.mustache'),
+  sources = ['templates/jar_publish/*.mustache'],
 )
 
 python_library(
   name = 'jar_task',
   sources = ['jar_task.py'],
   dependencies = [
-    '3rdparty/python/twitter/commons:twitter.common.collections',
-    '3rdparty/python:six',
     ':classpath_util',
     ':nailgun_task',
     'src/python/pants/backend/jvm:argfile',
@@ -331,8 +338,8 @@ python_library(
     'src/python/pants/binaries',
     'src/python/pants/java/jar',
     'src/python/pants/util:contextutil',
-    'src/python/pants/util:meta',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -346,14 +353,13 @@ python_library(
     'src/python/pants/util:memo',
     'src/python/pants/backend/jvm/targets:scala',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
-  name = 'junit_run',
+  name =  'junit_run',
   sources = ['junit_run.py'],
   dependencies = [
-    '3rdparty/python/twitter/commons:twitter.common.collections',
-    '3rdparty/python:six',
     ':classpath_util',
     ':jvm_task',
     ':jvm_tool_task_mixin',
@@ -380,17 +386,16 @@ python_library(
     'src/python/pants/util:desktop',
     'src/python/pants/util:dirutil',
     'src/python/pants/util:memo',
-    'src/python/pants/util:meta',
-    'src/python/pants/util:process_handler',
+    'src/python/pants/util:ordered_set',
     'src/python/pants/util:strutil',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
   name = 'jvm_binary_task',
   sources = ['jvm_binary_task.py'],
   dependencies = [
-    '3rdparty/python/twitter/commons:twitter.common.collections',
     ':classpath_products',
     ':jar_task',
     'src/python/pants/backend/jvm/subsystems:shader',
@@ -401,14 +406,15 @@ python_library(
     'src/python/pants/util:contextutil',
     'src/python/pants/util:fileutil',
     'src/python/pants/util:memo',
+    'src/python/pants/util:ordered_set',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
   name = 'jvm_dependency_analyzer',
   sources = ['jvm_dependency_analyzer.py'],
   dependencies = [
-    '3rdparty/python/twitter/commons:twitter.common.collections',
     ':classpath_util',
     'src/python/pants/backend/jvm/targets:jvm',
     'src/python/pants/backend/jvm/targets:scala',
@@ -416,7 +422,9 @@ python_library(
     'src/python/pants/java/distribution',
     'src/python/pants/util:dirutil',
     'src/python/pants/util:memo',
-  ]
+    'src/python/pants/util:ordered_set',
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -424,10 +432,8 @@ python_library(
   sources = ['jvm_dependency_check.py'],
   dependencies = [
     ':jvm_dependency_analyzer',
-    '3rdparty/python/twitter/commons:twitter.common.collections',
     'src/python/pants/base:build_environment',
     'src/python/pants/base:exceptions',
-    'src/python/pants/backend/jvm/tasks:ivy_task_mixin',
     'src/python/pants/backend/jvm/targets:jvm',
     'src/python/pants/backend/jvm/targets:scala',
     'src/python/pants/build_graph',
@@ -435,7 +441,9 @@ python_library(
     'src/python/pants/task',
     'src/python/pants/util:contextutil',
     'src/python/pants/util:memo',
+    'src/python/pants/util:ordered_set',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -446,9 +454,12 @@ python_library(
     'src/python/pants/backend/jvm/targets:jvm',
     'src/python/pants/base:build_environment',
     'src/python/pants/build_graph',
+    'src/python/pants/java/distribution',
     'src/python/pants/task',
     'src/python/pants/util:fileutil',
-  ]
+    'src/python/pants/util:memo',
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -460,7 +471,8 @@ python_library(
     'src/python/pants/backend/jvm/targets:jvm',
     'src/python/pants/task',
     'src/python/pants/util:memo',
-  ]
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -478,6 +490,7 @@ python_library(
     'src/python/pants/util:dirutil',
     'src/python/pants/util:strutil',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -489,6 +502,7 @@ python_library(
     'src/python/pants/build_graph',
     'src/python/pants/task',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -497,9 +511,9 @@ python_library(
   dependencies = [
     'src/python/pants/backend/jvm/subsystems:jvm_tool_mixin',
     'src/python/pants/base:exceptions',
-    'src/python/pants/java/distribution',
     'src/python/pants/task',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -512,8 +526,8 @@ python_library(
     'src/python/pants/task',
     'src/python/pants/util:desktop',
     'src/python/pants/util:dirutil',
-    'src/python/pants/util:process_handler',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -522,25 +536,30 @@ python_library(
   dependencies = [
     ':jvm_tool_task_mixin',
     'src/python/pants/java/jar',
+    'src/python/pants/base:build_environment',
     'src/python/pants/base:exceptions',
     'src/python/pants/java/distribution:distribution',
     'src/python/pants/java:executor',
     'src/python/pants/java:nailgun_executor',
     'src/python/pants/java:util',
+    'src/python/pants/process',
     'src/python/pants/task',
+    'src/python/pants/util:enums',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
   name = 'prepare_resources',
   sources = ['prepare_resources.py'],
   dependencies = [
-    '3rdparty/python/twitter/commons:twitter.common.collections',
     ':resources_task',
     'src/python/pants/backend/jvm/targets:jvm',
     'src/python/pants/base:build_environment',
     'src/python/pants/util:dirutil',
+    'src/python/pants/util:ordered_set',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -554,14 +573,13 @@ python_library(
     'src/python/pants/base:payload_field',
     'src/python/pants/util:dirutil',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
   name = 'properties',
   sources = ['properties.py'],
-  dependencies = [
-    '3rdparty/python:six',
-  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -575,6 +593,7 @@ python_library(
     'src/python/pants/util:dirutil',
     'src/python/pants/util:memo',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -584,6 +603,13 @@ python_library(
     'src/python/pants/option',
     'src/python/pants/task',
   ],
+  tags = {"partially_type_checked"},
+)
+
+python_library(
+  name = 'resolve_shared',
+  sources = ['resolve_shared.py'],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -598,6 +624,7 @@ python_library(
     'src/python/pants/java:executor',
     'src/python/pants/task',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -612,6 +639,7 @@ python_library(
     'src/python/pants/java/distribution',
     'src/python/pants/task',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -624,34 +652,39 @@ python_library(
     'src/python/pants/java/distribution',
     'src/python/pants/util:memo',
   ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
   name = 'scalafix',
-  sources = ['scalafix.py'],
+  sources = ['scalafix_task.py'],
   dependencies = [
     ':rewrite_base',
+    'src/python/pants/backend/jvm/subsystems:scala_linters',
     'src/python/pants/backend/jvm/tasks:nailgun_task',
     'src/python/pants/base:exceptions',
     'src/python/pants/build_graph',
     'src/python/pants/java/jar',
     'src/python/pants/option',
     'src/python/pants/task',
-  ]
+  ],
+  tags = {'partially_type_checked'},
 )
 
 python_library(
   name = 'scalafmt',
-  sources = ['scalafmt.py'],
+  sources = ['scalafmt_task.py'],
   dependencies = [
     ':rewrite_base',
+    'src/python/pants/backend/jvm/subsystems:scala_linters',
     'src/python/pants/backend/jvm/tasks:nailgun_task',
     'src/python/pants/base:exceptions',
     'src/python/pants/build_graph',
     'src/python/pants/java/jar',
     'src/python/pants/option',
     'src/python/pants/task',
-  ]
+  ],
+  tags = {'partially_type_checked'},
 )
 
 python_library(
@@ -659,18 +692,22 @@ python_library(
   sources = ['rewrite_base.py'],
   dependencies = [
     'src/python/pants/backend/jvm/tasks:nailgun_task',
+    'src/python/pants/base:deprecated',
     'src/python/pants/base:exceptions',
     'src/python/pants/build_graph',
-    'src/python/pants/util:meta',
+    'src/python/pants/option',
+    'src/python/pants/util:dirutil',
     'src/python/pants/util:memo',
-  ]
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
   name = 'scalastyle',
-  sources = ['scalastyle.py'],
+  sources = ['scalastyle_task.py'],
   dependencies = [
     ':nailgun_task',
+    'src/python/pants/backend/jvm/subsystems:scala_linters',
     'src/python/pants/backend/jvm/subsystems:scala_platform',
     'src/python/pants/base:exceptions',
     'src/python/pants/build_graph',
@@ -679,6 +716,7 @@ python_library(
     'src/python/pants/task',
     'src/python/pants/util:dirutil'
   ],
+  tags = {'partially_type_checked'},
 )
 
 python_library(
@@ -689,10 +727,12 @@ python_library(
     'src/python/pants/backend/jvm/targets:jvm',
     'src/python/pants/backend/jvm/tasks:jar_import_products',
     'src/python/pants/base:build_environment',
+    'src/python/pants/base:deprecated',
     'src/python/pants/base:fingerprint_strategy',
     'src/python/pants/fs',
     'src/python/pants/task',
-  ]
+  ],
+  tags = {"partially_type_checked"},
 )
 
 python_library(
@@ -703,4 +743,5 @@ python_library(
     'src/python/pants/backend/jvm/targets:jvm',
     'src/python/pants/task',
   ],
+  tags = {"partially_type_checked"},
 )

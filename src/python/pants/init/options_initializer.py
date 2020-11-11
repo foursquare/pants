@@ -1,152 +1,187 @@
-# coding=utf-8
 # Copyright 2016 Pants project contributors (see CONTRIBUTORS.md).
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 
-from __future__ import (absolute_import, division, generators, nested_scopes, print_function,
-                        unicode_literals, with_statement)
-
 import logging
+import os
 import sys
+from typing import Optional
 
 import pkg_resources
 
 from pants.base.build_environment import pants_version
 from pants.base.exceptions import BuildConfigurationError
+from pants.build_graph.build_configuration import BuildConfiguration
 from pants.goal.goal import Goal
 from pants.init.extension_loader import load_backends_and_plugins
+from pants.init.global_subsystems import GlobalSubsystems
 from pants.init.plugin_resolver import PluginResolver
-from pants.logging.setup import setup_logging
-from pants.option.global_options import GlobalOptionsRegistrar
+from pants.option.global_options import GlobalOptions
+from pants.option.options_bootstrapper import OptionsBootstrapper
 from pants.subsystem.subsystem import Subsystem
-
+from pants.util.dirutil import fast_relpath_optional
+from pants.util.ordered_set import OrderedSet
 
 logger = logging.getLogger(__name__)
 
 
-class OptionsInitializer(object):
-  """Initializes backends/plugins, global options and logging.
+class BuildConfigInitializer:
+    """Initializes a BuildConfiguration object.
 
-  This class uses a class-level cache for the internally generated `BuildConfiguration` object,
-  which permits multiple invocations in the same runtime context without re-incurring backend &
-  plugin loading, which can be expensive and cause issues (double task registration, etc).
-  """
-
-  # Class-level cache for the `BuildConfiguration` object.
-  _build_configuration = None
-
-  def __init__(self, options_bootstrapper, working_set=None, exiter=sys.exit):
+    This class uses a class-level cache for the internally generated `BuildConfiguration` object,
+    which permits multiple invocations in the same runtime context without re-incurring backend &
+    plugin loading, which can be expensive and cause issues (double task registration, etc).
     """
-    :param OptionsBootStrapper options_bootstrapper: An options bootstrapper instance.
-    :param pkg_resources.WorkingSet working_set: The working set of the current run as returned by
-                                                 PluginResolver.resolve().
-    :param func exiter: A function that accepts an exit code value and exits (for tests).
-    """
-    self._options_bootstrapper = options_bootstrapper
-    self._working_set = working_set or PluginResolver(self._options_bootstrapper).resolve()
-    self._exiter = exiter
 
-  @classmethod
-  def _has_build_configuration(cls):
-    return cls._build_configuration is not None
+    _cached_build_config: Optional[BuildConfiguration] = None
 
-  @classmethod
-  def _get_build_configuration(cls):
-    return cls._build_configuration
+    @classmethod
+    def get(cls, options_bootstrapper):
+        if cls._cached_build_config is None:
+            cls._cached_build_config = cls(options_bootstrapper).setup()
+        return cls._cached_build_config
 
-  @classmethod
-  def _set_build_configuration(cls, build_configuration):
-    cls._build_configuration = build_configuration
+    @classmethod
+    def reset(cls) -> None:
+        cls._cached_build_config = None
 
-  @classmethod
-  def reset(cls):
-    cls._set_build_configuration(None)
+    def __init__(self, options_bootstrapper: OptionsBootstrapper) -> None:
+        self._options_bootstrapper = options_bootstrapper
+        self._bootstrap_options = options_bootstrapper.get_bootstrap_options().for_global_scope()
+        self._working_set = PluginResolver(self._options_bootstrapper).resolve()
 
-  def _setup_logging(self, quiet, level, log_dir):
-    """Initializes logging."""
-    # N.B. quiet help says 'Squelches all console output apart from errors'.
-    level = 'ERROR' if quiet else level.upper()
-    setup_logging(level, console_stream=sys.stderr, log_dir=log_dir)
+    def _load_plugins(self) -> BuildConfiguration:
+        # Add any extra paths to python path (e.g., for loading extra source backends).
+        for path in self._bootstrap_options.pythonpath:
+            if path not in sys.path:
+                sys.path.append(path)
+                pkg_resources.fixup_namespace_packages(path)
 
-  def _load_plugins(self, working_set, python_paths, plugins, backend_packages):
-    """Load backends and plugins.
+        # Load plugins and backends.
+        return load_backends_and_plugins(
+            self._bootstrap_options.plugins,
+            self._bootstrap_options.plugins2,
+            self._working_set,
+            self._bootstrap_options.backend_packages,
+            self._bootstrap_options.backend_packages2,
+        )
 
-    :returns: A `BuildConfiguration` object constructed during backend/plugin loading.
-    """
-    # Add any extra paths to python path (e.g., for loading extra source backends).
-    for path in python_paths:
-      if path not in sys.path:
-        sys.path.append(path)
-        pkg_resources.fixup_namespace_packages(path)
+    def setup(self) -> BuildConfiguration:
+        """Load backends and plugins.
 
-    # Load plugins and backends.
-    return load_backends_and_plugins(plugins, working_set, backend_packages)
+        :returns: A `BuildConfiguration` object constructed during backend/plugin loading.
+        """
+        return self._load_plugins()
 
-  def _install_options(self, options_bootstrapper, build_configuration):
-    """Parse and register options.
 
-    :returns: An Options object representing the full set of runtime options.
-    """
-    # TODO: This inline import is currently necessary to resolve a ~legitimate cycle between
-    # `GoalRunner`->`EngineInitializer`->`OptionsInitializer`->`GoalRunner`.
-    from pants.bin.goal_runner import GoalRunner
+class OptionsInitializer:
+    """Initializes options."""
 
-    # Now that plugins and backends are loaded, we can gather the known scopes.
+    @staticmethod
+    def _construct_options(options_bootstrapper, build_configuration):
+        """Parse and register options.
 
-    # Gather the optionables that are not scoped to any other.  All known scopes are reachable
-    # via these optionables' known_scope_infos() methods.
-    top_level_optionables = ({GlobalOptionsRegistrar} |
-                             GoalRunner.subsystems() |
-                             build_configuration.subsystems() |
-                             set(Goal.get_optionables()))
+        :returns: An Options object representing the full set of runtime options.
+        """
+        # Now that plugins and backends are loaded, we can gather the known scopes.
 
-    known_scope_infos = sorted({
-      si for optionable in top_level_optionables for si in optionable.known_scope_infos()
-    })
+        # Gather the optionables that are not scoped to any other.  All known scopes are reachable
+        # via these optionables' known_scope_infos() methods.
+        top_level_optionables = (
+            {GlobalOptions}
+            | GlobalSubsystems.get()
+            | build_configuration.optionables()
+            | set(Goal.get_optionables())
+        )
 
-    # Now that we have the known scopes we can get the full options.
-    options = options_bootstrapper.get_full_options(known_scope_infos)
+        # Now that we have the known scopes we can get the full options. `get_full_options` will
+        # sort and de-duplicate these for us.
+        known_scope_infos = [
+            si for optionable in top_level_optionables for si in optionable.known_scope_infos()
+        ]
+        return options_bootstrapper.get_full_options(known_scope_infos)
 
-    distinct_optionable_classes = sorted({si.optionable_cls for si in known_scope_infos},
-                                         key=lambda o: o.options_scope)
-    for optionable_cls in distinct_optionable_classes:
-      optionable_cls.register_options_on_scope(options)
+    @staticmethod
+    def compute_pants_ignore(buildroot, global_options):
+        """Computes the merged value of the `--pants-ignore` flag.
 
-    # Make the options values available to all subsystems.
-    Subsystem.set_options(options)
+        This inherently includes the workdir and distdir locations if they are located under the
+        buildroot.
+        """
+        pants_ignore = list(global_options.pants_ignore)
 
-    return options
+        def add(absolute_path, include=False):
+            # To ensure that the path is ignored regardless of whether it is a symlink or a directory, we
+            # strip trailing slashes (which would signal that we wanted to ignore only directories).
+            maybe_rel_path = fast_relpath_optional(absolute_path, buildroot)
+            if maybe_rel_path:
+                rel_path = maybe_rel_path.rstrip(os.path.sep)
+                prefix = "!" if include else ""
+                pants_ignore.append(f"{prefix}/{rel_path}")
 
-  def setup(self, init_logging=True):
-    """Initializes logging, loads backends/plugins and parses options.
+        add(global_options.pants_workdir)
+        add(global_options.pants_distdir)
+        add(global_options.pants_subprocessdir)
 
-    :param bool init_logging: Whether or not to initialize logging as part of setup.
-    :returns: A tuple of (options, build_configuration).
-    """
-    global_bootstrap_options = self._options_bootstrapper.get_bootstrap_options().for_global_scope()
+        return pants_ignore
 
-    if global_bootstrap_options.pants_version != pants_version():
-      raise BuildConfigurationError(
-        'Version mismatch: Requested version was {}, our version is {}.'
-        .format(global_bootstrap_options.pants_version, pants_version())
-      )
+    @staticmethod
+    def compute_pantsd_invalidation_globs(buildroot, bootstrap_options):
+        """Computes the merged value of the `--pantsd-invalidation-globs` option.
 
-    # Get logging setup prior to loading backends so that they can log as needed.
-    if init_logging:
-      self._setup_logging(global_bootstrap_options.quiet,
-                          global_bootstrap_options.level,
-                          global_bootstrap_options.logdir)
+        Combines --pythonpath and --pants-config-files files that are in {buildroot} dir with those
+        invalidation_globs provided by users.
+        """
+        invalidation_globs = OrderedSet()
 
-    # Conditionally load backends/plugins and materialize a `BuildConfiguration` object.
-    if not self._has_build_configuration():
-      build_configuration = self._load_plugins(self._working_set,
-                                               global_bootstrap_options.pythonpath,
-                                               global_bootstrap_options.plugins,
-                                               global_bootstrap_options.backend_packages)
-      self._set_build_configuration(build_configuration)
-    else:
-      build_configuration = self._get_build_configuration()
+        # Globs calculated from the sys.path and other file-like configuration need to be sanitized
+        # to relative globs (where possible).
+        potentially_absolute_globs = (
+            *sys.path,
+            *bootstrap_options.pythonpath,
+            *bootstrap_options.pants_config_files,
+        )
+        for glob in potentially_absolute_globs:
+            # NB: We use `relpath` here because these paths are untrusted, and might need to be
+            # normalized in addition to being relativized.
+            glob_relpath = os.path.relpath(glob, buildroot)
+            if glob_relpath == "." or glob_relpath.startswith(".."):
+                logger.debug(
+                    f"Changes to {glob}, outside of the buildroot, will not be invalidated."
+                )
+            else:
+                invalidation_globs.update([glob_relpath, glob_relpath + "/**"])
 
-    # Parse and register options.
-    options = self._install_options(self._options_bootstrapper, build_configuration)
+        # Explicitly specified globs are already relative, and are added verbatim.
+        invalidation_globs.update(
+            (
+                "!*.pyc",
+                "!__pycache__/",
+                # TODO: This is a bandaid for https://github.com/pantsbuild/pants/issues/7022:
+                # macros should be adapted to allow this dependency to be automatically detected.
+                "requirements.txt",
+                "3rdparty/**/requirements.txt",
+                *bootstrap_options.pantsd_invalidation_globs,
+            )
+        )
 
-    return options, build_configuration
+        return list(invalidation_globs)
+
+    @classmethod
+    def create(cls, options_bootstrapper, build_configuration, init_subsystems=True):
+        global_bootstrap_options = options_bootstrapper.get_bootstrap_options().for_global_scope()
+
+        if global_bootstrap_options.pants_version != pants_version():
+            raise BuildConfigurationError(
+                f"Version mismatch: Requested version was {global_bootstrap_options.pants_version}, "
+                f"our version is {pants_version()}."
+            )
+
+        # Parse and register options.
+        options = cls._construct_options(options_bootstrapper, build_configuration)
+
+        GlobalOptions.validate_instance(options.for_global_scope())
+
+        if init_subsystems:
+            Subsystem.set_options(options)
+
+        return options

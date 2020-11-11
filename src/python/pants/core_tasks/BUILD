@@ -7,6 +7,7 @@ python_library(
     '3rdparty/python:packaging',
     '3rdparty/python:setuptools',
     ':templates',
+    'src/python/pants/auth',
     'src/python/pants/base:build_environment',
     'src/python/pants/base:deprecated',
     'src/python/pants/base:exceptions',
@@ -25,11 +26,12 @@ python_library(
     'src/python/pants/util:contextutil',
     'src/python/pants/util:desktop',
     'src/python/pants/util:dirutil',
-    'src/python/pants/util:process_handler',
     'src/python/pants:version',
-  ])
+  ],
+  tags = {'partially_type_checked'},
+)
 
 resources(
   name='templates',
-  sources=globs('templates/**/*.mustache'),
+  sources=['templates/**/*.mustache'],
 )

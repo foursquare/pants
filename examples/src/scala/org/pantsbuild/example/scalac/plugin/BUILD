@@ -35,6 +35,7 @@ scala_library(
   dependencies = [
     ':simple_scalac_plugin'
   ],
+  compiler_option_sets={'option-set-requiring-scalac-plugin'},
 )
 
 # The plugin will only run on this target if told to via options, but if it
@@ -75,5 +76,5 @@ scala_library(
 
 page(
   name='readme',
-  source='README.md',
+  sources=['README.md'],
 )

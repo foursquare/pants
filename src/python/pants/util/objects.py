@@ -1,319 +1,234 @@
-# coding=utf-8
 # Copyright 2016 Pants project contributors (see CONTRIBUTORS.md).
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 
-from __future__ import (absolute_import, division, generators, nested_scopes, print_function,
-                        unicode_literals, with_statement)
-
-import sys
-from abc import abstractmethod
-from collections import OrderedDict, namedtuple
-
-from pants.util.memo import memoized
-from pants.util.meta import AbstractClass
+from abc import ABC, abstractmethod
+from textwrap import dedent
+from typing import Any, Iterable, Optional, Type, Union
 
 
-def datatype(field_decls, superclass_name=None, **kwargs):
-  """A wrapper for `namedtuple` that accounts for the type of the object in equality.
+def get_docstring_summary(
+    cls: Type, *, fallback_to_ancestors: bool = False, ignored_ancestors: Iterable[Type] = (object,)
+) -> Optional[str]:
+    """Get the summary line(s) of docstring for a class.
 
-  Field declarations can be a string, which declares a field with that name and
-  no type checking. Field declarations can also be a tuple `('field_name',
-  field_type)`, which declares a field named `field_name` which is type-checked
-  at construction. If a type is given, the value provided to the constructor for
-  that field must be exactly that type (i.e. `type(x) == field_type`), and not
-  e.g. a subclass.
+    If the summary is one more than one line, this will flatten them into a single line.
+    """
+    # This will fix indentation and strip unnecessary whitespace.
+    all_docstring = get_docstring(
+        cls, fallback_to_ancestors=fallback_to_ancestors, ignored_ancestors=ignored_ancestors
+    )
 
-  :param field_decls: Iterable of field declarations.
-  :return: A type object which can then be subclassed.
-  :raises: :class:`TypeError`
-  """
-  field_names = []
-  fields_with_constraints = OrderedDict()
-  for maybe_decl in field_decls:
-    # ('field_name', type)
-    if isinstance(maybe_decl, tuple):
-      field_name, type_spec = maybe_decl
-      if isinstance(type_spec, type):
-        type_constraint = Exactly(type_spec)
-      elif isinstance(type_spec, TypeConstraint):
-        type_constraint = type_spec
-      else:
-        raise TypeError(
-          "type spec for field '{}' was not a type or TypeConstraint: was {!r} (type {!r})."
-          .format(field_name, type_spec, type(type_spec).__name__))
-      fields_with_constraints[field_name] = type_constraint
+    if all_docstring is None:
+        return None
+
+    lines = all_docstring.splitlines()
+    first_blank_line_index = next(
+        (i for i, line in enumerate(lines) if line.strip() == ""), len(lines)
+    )
+    return " ".join(lines[:first_blank_line_index])
+
+
+def get_docstring(
+    cls: Type,
+    *,
+    flatten: bool = False,
+    fallback_to_ancestors: bool = False,
+    ignored_ancestors: Iterable[Type] = (object,),
+) -> Optional[str]:
+    """Get the docstring for a class with properly handled indentation.
+
+    :param cls: the class, e.g. MyClass.
+    :param flatten: flatten the docstring into a single line by replacing all newlines with spaces
+        and stripping leading indentation.
+    :param fallback_to_ancestors: if the class does not have docstring defined, try to use docstring
+        from its superclasses, if any. This traverses in the MRO order, i.e. tries to use its
+        direct parent, then grandparent, and ultimately `object()`.
+    :param ignored_ancestors: if `fallback_to_ancestors` is True, do not use the docstring from
+        these ancestors.
+    """
+    if cls.__doc__ is not None:
+        docstring = cls.__doc__.strip()
     else:
-      # interpret it as a field name without a type to check
-      field_name = maybe_decl
-    # namedtuple() already checks field uniqueness
-    field_names.append(field_name)
+        if not fallback_to_ancestors:
+            return None
+        # Fallback to ancestors in MRO order.
+        ancestor_docstring = next(
+            (
+                ancestor_cls.__doc__.strip()
+                for ancestor_cls in cls.mro()[1:]
+                if ancestor_cls not in ignored_ancestors and ancestor_cls.__doc__ is not None
+            ),
+            None,
+        )
+        if ancestor_docstring is None:
+            return None
+        docstring = ancestor_docstring
 
-  if not superclass_name:
-    superclass_name = '_anonymous_namedtuple_subclass'
-  superclass_name = str(superclass_name)
+    newline_index = docstring.find("\n")
+    if newline_index == -1:
+        return docstring
 
-  namedtuple_cls = namedtuple(superclass_name, field_names, **kwargs)
+    # Fix indentation of lines after the first line.
+    lines = [docstring[:newline_index], *dedent(docstring[newline_index + 1 :]).splitlines()]
 
-  class DataType(namedtuple_cls):
-    @classmethod
-    def make_type_error(cls, msg):
-      return TypeCheckError(cls.__name__, msg)
+    if flatten:
+        return " ".join(line.strip() for line in lines if line).strip()
+    return "\n".join(lines)
 
-    def __new__(cls, *args, **kwargs):
-      this_object = super(DataType, cls).__new__(cls, *args, **kwargs)
 
-      # TODO(cosmicexplorer): Make this kind of exception pattern (filter for
-      # errors then display them all at once) more ergonomic.
-      type_failure_msgs = []
-      for field_name, field_constraint in fields_with_constraints.items():
-        field_value = getattr(this_object, field_name)
-        try:
-          field_constraint.validate_satisfied_by(field_value)
-        except TypeConstraintError as e:
-          type_failure_msgs.append(
-            "field '{}' was invalid: {}".format(field_name, e))
-      if type_failure_msgs:
-        raise cls.make_type_error('\n'.join(type_failure_msgs))
+def pretty_print_type_hint(hint: Any) -> str:
+    if getattr(hint, "__origin__", None) == Union:
+        union_members = hint.__args__
+        hint_str = " | ".join(pretty_print_type_hint(member) for member in union_members)
+    # NB: Checking for GenericMeta is only for Python 3.6 because some `typing` classes like
+    # `typing.Iterable` have its type, whereas Python 3.7+ removes it. Remove this check
+    # once we drop support for Python 3.6.
+    elif isinstance(hint, type) and not str(type(hint)) == "<class 'typing.GenericMeta'>":
+        hint_str = hint.__name__
+    else:
+        hint_str = str(hint)
+    return hint_str.replace("typing.", "").replace("NoneType", "None")
 
-      return this_object
 
-    def __eq__(self, other):
-      if self is other:
-        return True
+# TODO: make this error into an attribute on the `TypeConstraint` class object!
+class TypeConstraintError(TypeError):
+    """Indicates a :class:`TypeConstraint` violation."""
 
-      # Compare types and fields.
-      if type(self) != type(other):
-        return False
-      # Explicitly return super.__eq__'s value in case super returns NotImplemented
-      return super(DataType, self).__eq__(other)
+
+class TypeConstraint(ABC):
+    """Represents a type constraint.
+
+    Not intended for direct use; instead, use one of :class:`SuperclassesOf`, :class:`Exactly` or
+    :class:`SubclassesOf`.
+    """
+
+    def __init__(self, description):
+        """Creates a type constraint centered around the given types.
+
+        The type constraint is satisfied as a whole if satisfied for at least one of the given types.
+
+        :param str description: A concise, readable description of what the type constraint represents.
+                                Used directly as the __str__ implementation.
+        """
+        self._description = description
+
+    @abstractmethod
+    def satisfied_by(self, obj):
+        """Return `True` if the given object satisfies this type constraint.
+
+        :rtype: bool
+        """
+
+    def make_type_constraint_error(self, obj, constraint):
+        return TypeConstraintError(
+            "value {!r} (with type {!r}) must satisfy this type constraint: {}.".format(
+                obj, type(obj).__name__, constraint
+            )
+        )
+
+    # TODO: disallow overriding this method with some form of mixin/decorator along with datatype
+    # __eq__!
+    def validate_satisfied_by(self, obj):
+        """Return `obj` if the object satisfies this type constraint, or raise.
+
+        :raises: `TypeConstraintError` if `obj` does not satisfy the constraint.
+        """
+
+        if self.satisfied_by(obj):
+            return obj
+
+        raise self.make_type_constraint_error(obj, self)
 
     def __ne__(self, other):
-      return not (self == other)
-
-    # NB: As datatype is not iterable, we need to override both __iter__ and all of the
-    # namedtuple methods that expect self to be iterable.
-    def __iter__(self):
-      raise TypeError("'{}' object is not iterable".format(type(self).__name__))
-
-    def _super_iter(self):
-      return super(DataType, self).__iter__()
-
-    def _asdict(self):
-      '''Return a new OrderedDict which maps field names to their values'''
-      return OrderedDict(zip(self._fields, self._super_iter()))
-
-    def _replace(_self, **kwds):
-      '''Return a new datatype object replacing specified fields with new values'''
-      result = _self._make(map(kwds.pop, _self._fields, _self._super_iter()))
-      if kwds:
-        raise ValueError('Got unexpected field names: %r' % kwds.keys())
-      return result
-
-    def __getnewargs__(self):
-      '''Return self as a plain tuple.  Used by copy and pickle.'''
-      return tuple(self._super_iter())
-
-    def __repr__(self):
-      args_formatted = []
-      for field_name in field_names:
-        field_value = getattr(self, field_name)
-        args_formatted.append("{}={!r}".format(field_name, field_value))
-      return '{class_name}({args_joined})'.format(
-        class_name=type(self).__name__,
-        args_joined=', '.join(args_formatted))
+        return not (self == other)
 
     def __str__(self):
-      elements_formatted = []
-      for field_name in field_names:
-        constraint_for_field = fields_with_constraints.get(field_name, None)
-        field_value = getattr(self, field_name)
-        if not constraint_for_field:
-          elements_formatted.append(
-            "{field_name}={field_value}"
-            .format(field_name=field_name,
-                    field_value=field_value))
+        return self._description
+
+
+class TypeOnlyConstraint(TypeConstraint):
+    """A `TypeConstraint` predicated only on the object's type.
+
+    `TypeConstraint` subclasses may override `.satisfied_by()` to perform arbitrary validation on
+    the object itself -- however, this class implements `.satisfied_by()` with a guarantee that it
+    will only act on the object's `type` via `.satisfied_by_type()`. This kind of type checking is
+    faster and easier to understand than the more complex validation allowed by `.satisfied_by()`.
+    """
+
+    def __init__(self, *types):
+        """Creates a type constraint based on some logic to match the given types.
+
+        NB: A `TypeOnlyConstraint` implementation should ensure that the type constraint is satisfied as
+        a whole if satisfied for at least one of the given `types`.
+
+        :param type *types: The types this constraint will match in some way.
+        """
+
+        if not types:
+            raise ValueError("Must supply at least one type")
+        if any(not isinstance(t, type) for t in types):
+            raise TypeError(f"Supplied types must be types. {types!r}")
+
+        if len(types) == 1:
+            type_list = types[0].__name__
         else:
-          elements_formatted.append(
-            "{field_name}<{type_constraint}>={field_value}"
-            .format(field_name=field_name,
-                    type_constraint=constraint_for_field,
-                    field_value=field_value))
-      return '{class_name}({typed_tagged_elements})'.format(
-        class_name=type(self).__name__,
-        typed_tagged_elements=', '.join(elements_formatted))
+            type_list = " or ".join(t.__name__ for t in types)
+        description = f"{type(self).__name__}({type_list})"
 
-  # Return a new type with the given name, inheriting from the DataType class
-  # just defined, with an empty class body.
-  return type(superclass_name, (DataType,), {})
+        super().__init__(description=description)
 
+        # NB: This is made into a tuple so that we can use self._types in issubclass() and others!
+        self._types = tuple(types)
 
-class TypedDatatypeClassConstructionError(Exception):
+    # TODO(#7114): remove this after the engine is converted to use `TypeId` instead of
+    # `TypeConstraint`!
+    @property
+    def types(self):
+        return self._types
 
-  # TODO(cosmicexplorer): make some wrapper exception class to make this kind of
-  # prefixing easy (maybe using a class field format string?).
-  def __init__(self, type_name, msg, *args, **kwargs):
-    full_msg =  "error: while trying to generate typed datatype {}: {}".format(
-      type_name, msg)
-    super(TypedDatatypeClassConstructionError, self).__init__(
-      full_msg, *args, **kwargs)
+    @abstractmethod
+    def satisfied_by_type(self, obj_type):
+        """Return `True` if the given object satisfies this type constraint.
 
+        :rtype: bool
+        """
 
-class TypedDatatypeInstanceConstructionError(Exception):
+    def satisfied_by(self, obj):
+        return self.satisfied_by_type(type(obj))
 
-  def __init__(self, type_name, msg, *args, **kwargs):
-    full_msg = "error: in constructor of type {}: {}".format(type_name, msg)
-    super(TypedDatatypeInstanceConstructionError, self).__init__(
-      full_msg, *args, **kwargs)
+    def __hash__(self):
+        return hash((type(self), self._types))
 
+    def __eq__(self, other):
+        return type(self) == type(other) and self._types == other._types
 
-class TypeCheckError(TypedDatatypeInstanceConstructionError):
-
-  def __init__(self, type_name, msg, *args, **kwargs):
-    formatted_msg = "type check error:\n{}".format(msg)
-    super(TypeCheckError, self).__init__(
-      type_name, formatted_msg, *args, **kwargs)
+    def __repr__(self):
+        constrained_type = ", ".join(t.__name__ for t in self._types)
+        return f"{type(self).__name__}({constrained_type})"
 
 
-class TypeConstraintError(TypeError):
-  """Indicates a :class:`TypeConstraint` violation."""
+class SuperclassesOf(TypeOnlyConstraint):
+    """Objects of the exact type as well as any super-types are allowed."""
+
+    def satisfied_by_type(self, obj_type):
+        return any(issubclass(t, obj_type) for t in self._types)
 
 
-class TypeConstraint(AbstractClass):
-  """Represents a type constraint.
+class Exactly(TypeOnlyConstraint):
+    """Only objects of the exact type are allowed."""
 
-  Not intended for direct use; instead, use one of :class:`SuperclassesOf`, :class:`Exact` or
-  :class:`SubclassesOf`.
-  """
+    def satisfied_by_type(self, obj_type):
+        return obj_type in self._types
 
-  def __init__(self, *types, **kwargs):
-    """Creates a type constraint centered around the given types.
-
-    The type constraint is satisfied as a whole if satisfied for at least one of the given types.
-
-    :param type *types: The focus of this type constraint.
-    :param str description: A description for this constraint if the list of types is too long.
-    """
-    if not types:
-      raise ValueError('Must supply at least one type')
-    if any(not isinstance(t, type) for t in types):
-      raise TypeError('Supplied types must be types. {!r}'.format(types))
-
-    # NB: `types` is converted to tuple here because self.types's docstring says
-    # it returns a tuple. Does it matter what type this field is?
-    self._types = tuple(types)
-    self._desc = kwargs.get('description', None)
-
-  @property
-  def types(self):
-    """Return the subject types of this type constraint.
-
-    :type: tuple of type
-    """
-    return self._types
-
-  def satisfied_by(self, obj):
-    """Return `True` if the given object satisfies this type constraint.
-
-    :rtype: bool
-    """
-    return self.satisfied_by_type(type(obj))
-
-  @abstractmethod
-  def satisfied_by_type(self, obj_type):
-    """Return `True` if the given object satisfies this type constraint.
-
-    :rtype: bool
-    """
-
-  def validate_satisfied_by(self, obj):
-    """Return `obj` if the object satisfies this type constraint, or raise.
-
-    :raises: `TypeConstraintError` if `obj` does not satisfy the constraint.
-    """
-
-    if self.satisfied_by(obj):
-      return obj
-
-    raise TypeConstraintError(
-      "value {!r} (with type {!r}) must satisfy this type constraint: {!r}."
-      .format(obj, type(obj).__name__, self))
-
-  def __hash__(self):
-    return hash((type(self), self._types))
-
-  def __eq__(self, other):
-    return type(self) == type(other) and self._types == other._types
-
-  def __ne__(self, other):
-    return not (self == other)
-
-  def __str__(self):
-    if self._desc:
-      constrained_type = '({})'.format(self._desc)
-    else:
-      if len(self._types) == 1:
-        constrained_type = self._types[0].__name__
-      else:
-        constrained_type = '({})'.format(', '.join(t.__name__ for t in self._types))
-    return '{variance_symbol}{constrained_type}'.format(variance_symbol=self._variance_symbol,
-                                                        constrained_type=constrained_type)
-
-  def __repr__(self):
-    if self._desc:
-      constrained_type = self._desc
-    else:
-      constrained_type = ', '.join(t.__name__ for t in self._types)
-    return ('{type_constraint_type}({constrained_type})'
-      .format(type_constraint_type=type(self).__name__,
-                    constrained_type=constrained_type))
+    def graph_str(self):
+        if len(self.types) == 1:
+            return self.types[0].__name__
+        else:
+            return repr(self)
 
 
-class SuperclassesOf(TypeConstraint):
-  """Objects of the exact type as well as any super-types are allowed."""
+class SubclassesOf(TypeOnlyConstraint):
+    """Objects of the exact type as well as any sub-types are allowed."""
 
-  _variance_symbol = '-'
-
-  def satisfied_by_type(self, obj_type):
-    return any(issubclass(t, obj_type) for t in self._types)
-
-
-class Exactly(TypeConstraint):
-  """Only objects of the exact type are allowed."""
-
-  _variance_symbol = '='
-
-  def satisfied_by_type(self, obj_type):
-    return obj_type in self._types
-
-  def graph_str(self):
-    if len(self.types) == 1:
-      return self.types[0].__name__
-    else:
-      return repr(self)
-
-
-class SubclassesOf(TypeConstraint):
-  """Objects of the exact type as well as any sub-types are allowed."""
-
-  _variance_symbol = '+'
-
-  def satisfied_by_type(self, obj_type):
-    return issubclass(obj_type, self._types)
-
-
-class Collection(object):
-  """Constructs classes representing collections of objects of a particular type."""
-
-  @classmethod
-  @memoized
-  def of(cls, *element_types):
-    union = '|'.join(element_type.__name__ for element_type in element_types)
-    type_name = b'{}.of({})'.format(cls.__name__, union)
-    supertypes = (cls, datatype(['dependencies'], superclass_name='Collection'))
-    properties = {'element_types': element_types}
-    collection_of_type = type(type_name, supertypes, properties)
-
-    # Expose the custom class type at the module level to be pickle compatible.
-    setattr(sys.modules[cls.__module__], type_name, collection_of_type)
-
-    return collection_of_type
+    def satisfied_by_type(self, obj_type):
+        return issubclass(obj_type, self._types)

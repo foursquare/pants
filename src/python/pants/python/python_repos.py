@@ -1,42 +1,50 @@
-# coding=utf-8
 # Copyright 2014 Pants project contributors (see CONTRIBUTORS.md).
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 
-from __future__ import (absolute_import, division, generators, nested_scopes, print_function,
-                        unicode_literals, with_statement)
-
-from pex.fetcher import Fetcher, PyPIFetcher
-from pex.http import Context
+from typing import List, cast
 
 from pants.subsystem.subsystem import Subsystem
 
 
 class PythonRepos(Subsystem):
-  """A python code repository."""
-  options_scope = 'python-repos'
+    """External Python code repositories, such as PyPI.
 
-  @classmethod
-  def register_options(cls, register):
-    super(PythonRepos, cls).register_options(register)
-    register('--repos', advanced=True, type=list, default=[], fingerprint=True,
-             help='URLs of code repositories.')
-    register('--indexes', advanced=True, type=list, fingerprint=True,
-             default=['https://pypi.python.org/simple/'], help='URLs of code repository indexes.')
+    These options may be used to point to custom cheeseshops when resolving requirements.
+    """
 
-  @property
-  def repos(self):
-    return self.get_options().repos
+    options_scope = "python-repos"
 
-  @property
-  def indexes(self):
-    return self.get_options().indexes
+    @classmethod
+    def register_options(cls, register):
+        super().register_options(register)
+        register(
+            "--repos",
+            advanced=True,
+            type=list,
+            default=[],
+            fingerprint=True,
+            help=(
+                "URLs of code repositories to look for requirements. In Pip and Pex, this option "
+                "corresponds to the `--find-links` option."
+            ),
+        )
+        register(
+            "--indexes",
+            advanced=True,
+            type=list,
+            fingerprint=True,
+            default=["https://pypi.org/simple/"],
+            help=(
+                "URLs of code repository indexes to look for requirements. If set to an empty "
+                "list, then Pex will use no indices (meaning it will not use PyPI). The values "
+                "should be compliant with PEP 503."
+            ),
+        )
 
-  def get_fetchers(self):
-    fetchers = []
-    fetchers.extend(Fetcher([url]) for url in self.repos)
-    fetchers.extend(PyPIFetcher(url) for url in self.indexes)
-    return fetchers
+    @property
+    def repos(self) -> List[str]:
+        return cast(List[str], self.options.repos)
 
-  def get_network_context(self):
-    # TODO(wickman): Add retry, conn_timeout, threads, etc configuration here.
-    return Context.get()
+    @property
+    def indexes(self) -> List[str]:
+        return cast(List[str], self.options.indexes)

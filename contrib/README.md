@@ -35,26 +35,22 @@ Contrib plugins should generally follow 3 basic setup steps:
    ```
 
 2. Make the local pants aware of your plugin
-   This involves 2 edits to `pants.ini`.  You'll need to add one entry in each of the
+   This involves 2 edits to `pants.toml`.  You'll need to add one entry in each of the
    `pythonpath` and `backend_packages` lists:
-   ```ini
+   ```toml
    [GLOBAL]
    # Enable our own custom loose-source plugins as well as contribs.
-   pythonpath: [
-       "%(buildroot)s/pants-plugins/src/python",
-       ...
-       "%(buildroot)s/contrib/example/src/python",  # 1
-       ...
-     ]
+   pythonpath = [
+     "%(buildroot)s/pants-plugins/src/python",
+     "%(buildroot)s/contrib/example/src/python",  # 1
+   ]
 
-   backend_packages: [
-       "internal_backend.repositories",
-       "internal_backend.sitegen",
-       "internal_backend.utilities",
-       ...
-       "pants.contrib.example",  # 2
-       ...
-     ]
+   backend_packages = [
+     "internal_backend.repositories",
+     "internal_backend.sitegen",
+     "internal_backend.utilities",
+     "pants.contrib.example",  # 2
+   ]
    ```
 
 3. When you're ready for your plugin to be distributed, convert your main `python_library` plugin
@@ -63,7 +59,7 @@ Contrib plugins should generally follow 3 basic setup steps:
    The `contrib_plugin` target assumes 1 source of `register.py`; so, the sources argument should be
    removed.  It still accepts dependencies and other python target arguments with some special
    additions to help define the plugin distribution.  You'll need to supply a `distribution_name`
-   and a `description` of the plugin suitable for [pypi](https://pypi.python.org/pypi) as well as
+   and a `description` of the plugin suitable for [pypi](https://pypi.org/pypi) as well as
    parameters indicating which plugin entry points your plugin implements:
    ```python
    contrib_plugin(
@@ -78,25 +74,25 @@ Contrib plugins should generally follow 3 basic setup steps:
    methods, but a plugin may additionally implement the `global_subsystems` entry point method, in
    which case it's `contrib_plugin` target would have a `global_subsystems=True,` entry as well.
 
-   To register with the release script, add an entry to `contrib/release_packages.sh`:
-   ```bash
-   PKG_EXAMPLE=(
-     "pantsbuild.pants.contrib.example"
+   To register with the release script, add an entry to the `contrib_packages` set in
+   `src/python/pants/releases/packages.py`:
+   ```python
+   Package(
+     "pantsbuild.pants.contrib.example",
      "//contrib/example/src/python/pants/contrib/example:plugin"
-     "pkg_example_install_test"
    )
+   ```
+
+   And add a testing function to `contrib/release_packages.sh` named by inserting the string after
+   the last `.` of the package name into the name `pkg_<name>_install_test`:
+   ```bash
    function pkg_example_install_test() {
      execute_packaged_pants_with_internal_backends \
        --plugins="['pantsbuild.pants.contrib.example==$(local_version)']" \
        goals | grep "example-goal" &> /dev/null
    }
-
-   # Once an individual (new) package is declared above, insert it into the array below)
-   CONTRIB_PACKAGES=(
-     PKG_SCROOGE
-     PKG_EXAMPLE
-   )
    ```
+
    NB: The act of releasing your contrib distribution is part of of the normal `pantsbuild.pants`
    [release process](https://www.pantsbuild.org/howto_contribute.html).  You may need to request
    a release from the owners if you have a change that should be fast-tracked before the next

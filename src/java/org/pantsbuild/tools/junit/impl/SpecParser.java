@@ -3,10 +3,10 @@
 
 package org.pantsbuild.tools.junit.impl;
 
-import com.google.common.base.Optional;
 import java.lang.reflect.Method;
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.Optional;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Iterables;
@@ -27,6 +27,8 @@ class SpecParser {
    * <ul>
    *   <li>package.className</li>
    *   <li>package.className#methodName</li>
+   *   <li>package.className#methodName[parameters]</li>
+   *   <li>package.className#space delimited scala test</li>
    * </ul>
    * Note that each class or method will only be executed once, no matter how many times it is
    * present in the list.
@@ -75,16 +77,23 @@ class SpecParser {
    * @throws SpecException if the method passed in is not an executable test method
    */
   private Optional<Spec> getOrCreateSpec(String className, String specString) throws SpecException {
-    try {
-      Class<?> clazz = getClass().getClassLoader().loadClass(className);
-      if (Util.isTestClass(clazz)) {
-        if (!specs.containsKey(clazz)) {
-          Spec newSpec = new Spec(clazz);
-          specs.put(clazz, newSpec);
+    Class<?> clazz = loadClassOrThrow(className, specString);
+    if (Util.isTestClass(clazz)) {
+      if (!specs.containsKey(clazz)) {
+        Spec newSpec = new Spec(clazz);
+        if (ScalaTestUtil.isScalaTestTest(clazz) || Util.isUsingCustomRunner(clazz)) {
+          newSpec = newSpec.asCustomRunnerSpec();
         }
-        return Optional.of(specs.get(clazz));
+        specs.put(clazz, newSpec);
       }
-      return Optional.absent();
+      return Optional.of(specs.get(clazz));
+    }
+    return Optional.empty();
+  }
+
+  private Class<?> loadClassOrThrow(final String className, String specString) {
+    try {
+      return getClass().getClassLoader().loadClass(className);
     } catch (ClassNotFoundException | NoClassDefFoundError e) {
       throw new SpecException(specString,
           String.format("Class %s not found in classpath.", className), e);
@@ -94,9 +103,10 @@ class SpecParser {
       throw new SpecException(specString,
           String.format("Error linking %s.", className), e);
       // See the comment below for justification.
-    } catch (RuntimeException e) {
+    } catch (Exception e) {
       // The class may fail with some variant of RTE in its static initializers, trap these
-      // and dump the bad spec in question to help narrow down issue.
+      // and dump the bad spec in question along with the underlying error message to help
+      // narrow down issue.
       throw new SpecException(specString,
           String.format("Error initializing %s.",className), e);
     }
@@ -116,6 +126,10 @@ class SpecParser {
     Optional<Spec> spec = getOrCreateSpec(className, specString);
     if (spec.isPresent()) {
       Spec s = spec.get();
+      if (s.methodNameAllowedToNotMatch()) {
+        specs.put(s.getSpecClass(), s.withMethod(methodName));
+        return;
+      }
       for (Method clazzMethod : s.getSpecClass().getMethods()) {
         if (clazzMethod.getName().equals(methodName)) {
           Spec specWithMethod = s.withMethod(methodName);

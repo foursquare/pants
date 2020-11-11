@@ -1,6 +1,9 @@
-#!/usr/bin/env bash
+# NB: shellcheck complains this is unused, but it's used by callers. See https://github.com/koalaman/shellcheck/wiki/SC2034.
+# shellcheck disable=SC2034
+CACHE_ROOT=${XDG_CACHE_HOME:-$HOME/.cache}/pants
 
 TRAVIS_FOLD_STATE="/tmp/.travis_fold_current"
+
 CLEAR_LINE="\x1b[K"
 COLOR_BLUE="\x1b[34m"
 COLOR_RED="\x1b[31m"
@@ -22,12 +25,12 @@ function green() {
 }
 
 # Initialization for elapsed()
-: ${elapsed_start_time:=$(date +'%s')}
+: "${elapsed_start_time:=$(date +'%s')}"
 export elapsed_start_time
 
 function elapsed() {
   now=$(date '+%s')
-  elapsed_secs=$(( $now - $elapsed_start_time ))
+  elapsed_secs=$(( now - elapsed_start_time ))
   echo $elapsed_secs | awk '{printf "%02d:%02d\n",int($1/60), int($1%60)}'
 }
 
@@ -58,27 +61,10 @@ function end_travis_section() {
 }
 
 function fingerprint_data() {
-  openssl sha1 | cut -d' ' -f2
+  git hash-object --stdin
 }
 
-function ensure_file_exists() {
-  if [ ! -s "${1}" ]; then
-    die "ERROR: ${1} does not exist!"
-  fi
+function git_merge_base() {
+  # This prints the tracking branch if set and otherwise falls back to local "master".
+  git rev-parse --symbolic-full-name --abbrev-ref HEAD@\{upstream\} 2>/dev/null || echo 'master'
 }
-
-# Prevent bootstrapping failure due to unrecognized flag:
-# https://github.com/pantsbuild/pants/issues/78
-function set_archflags() {
-  GCC_VERSION=$(gcc -v 2>&1)
-  if [ $? -ne 0 ]; then
-    die "ERROR: unable to execute 'gcc'. Please verify that your compiler is installed, in your\n" \
-        "      \$PATH and functional.\n\n" \
-        "      Hint: on Mac OS X, you may need to accept the XCode EULA: 'sudo xcodebuild -license accept'."
-  fi
-  if [[ "$GCC_VERSION" == *503.0.38* ]]; then
-    # Required for clang version 503.0.38
-    export set ARCHFLAGS=-Wno-error=unused-command-line-argument-hard-error-in-future
-  fi
-}
-set_archflags
